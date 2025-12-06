@@ -20,7 +20,7 @@ const instruments = new Hono<{ Bindings: Bindings; Variables: Variables }>();
  * Helper to get KiteClient from app config or account
  */
 async function getKiteClientFromConfig(c: any): Promise<KiteClient | null> {
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
   
   // First try to get from app_config
   const apiKeyConfig = await c.env.DB.prepare(
@@ -50,7 +50,7 @@ async function getAuthenticatedKiteClient(c: any, accountId: number): Promise<Ki
   
   if (!account?.access_token) return null;
   
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
   
   // Try account-specific credentials first
   if (account.kite_api_key && account.kite_api_secret) {
