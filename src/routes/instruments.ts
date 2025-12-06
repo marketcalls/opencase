@@ -7,8 +7,6 @@ import { Hono } from 'hono';
 import type { 
   Bindings, 
   Variables, 
-  Account,
-  SessionData,
   MasterInstrument
 } from '../types';
 import { successResponse, errorResponse, decrypt } from '../lib/utils';
@@ -40,41 +38,36 @@ async function getKiteClientFromConfig(c: any): Promise<KiteClient | null> {
   return null;
 }
 
+// User session interface
+interface UserSession {
+  user_id: number;
+  email: string;
+  name: string;
+  is_admin: boolean;
+  expires_at: number;
+}
+
 /**
- * Helper to get authenticated KiteClient
+ * Helper to get authenticated KiteClient from user's connected broker accounts
  */
-async function getAuthenticatedKiteClient(c: any, accountId: number): Promise<KiteClient | null> {
-  const account = await c.env.DB.prepare(
-    'SELECT * FROM accounts WHERE id = ?'
-  ).bind(accountId).first<Account>();
-  
-  if (!account?.access_token) return null;
-  
+async function getAuthenticatedKiteClient(c: any, userId: number): Promise<KiteClient | null> {
   const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
   
-  // Try account-specific credentials first
-  if (account.kite_api_key && account.kite_api_secret) {
-    const apiKey = await decrypt(account.kite_api_key, encryptionKey);
-    const apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
-    return new KiteClient(apiKey, apiSecret, account.access_token);
+  // Get user's connected Zerodha broker account
+  const brokerAccount = await c.env.DB.prepare(
+    `SELECT * FROM broker_accounts 
+     WHERE user_id = ? AND broker_type = 'zerodha' AND is_connected = 1 AND is_active = 1
+     ORDER BY last_connected_at DESC LIMIT 1`
+  ).bind(userId).first<any>();
+  
+  if (!brokerAccount?.access_token || !brokerAccount?.api_key_encrypted) {
+    return null;
   }
   
-  // Fall back to app config
-  const apiKeyConfig = await c.env.DB.prepare(
-    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
-  ).first<{ config_value: string }>();
+  const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+  const apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
   
-  const apiSecretConfig = await c.env.DB.prepare(
-    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
-  ).first<{ config_value: string }>();
-  
-  if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
-    const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
-    const apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
-    return new KiteClient(apiKey, apiSecret, account.access_token);
-  }
-  
-  return null;
+  return new KiteClient(apiKey, apiSecret, brokerAccount.access_token);
 }
 
 /**
@@ -123,14 +116,14 @@ instruments.post('/download', async (c) => {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
   
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
   
-  if (!sessionData) {
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
   }
   
   try {
-    const kite = await getAuthenticatedKiteClient(c, sessionData.account_id);
+    const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
     
     if (!kite) {
       return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha first'), 401);
@@ -343,10 +336,10 @@ instruments.get('/search', async (c) => {
     
     // Fetch LTP if requested and authenticated
     if (withLtp && sessionId && results.results.length > 0) {
-      const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+      const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
       
-      if (sessionData) {
-        const kite = await getAuthenticatedKiteClient(c, sessionData.account_id);
+      if (userSession && userSession.expires_at > Date.now()) {
+        const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
         
         if (kite) {
           try {
@@ -417,10 +410,10 @@ instruments.get('/popular', async (c) => {
     
     // Fetch LTP if authenticated
     if (sessionId && results.results.length > 0) {
-      const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+      const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
       
-      if (sessionData) {
-        const kite = await getAuthenticatedKiteClient(c, sessionData.account_id);
+      if (userSession && userSession.expires_at > Date.now()) {
+        const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
         
         if (kite) {
           try {
@@ -473,10 +466,10 @@ instruments.get('/ltp', async (c) => {
     let ltp: Record<string, any> = {};
     
     if (sessionId) {
-      const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+      const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
       
-      if (sessionData) {
-        const kite = await getAuthenticatedKiteClient(c, sessionData.account_id);
+      if (userSession && userSession.expires_at > Date.now()) {
+        const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
         
         if (kite) {
           ltp = await kite.getLTP(symbols);
@@ -511,10 +504,10 @@ instruments.get('/quotes', async (c) => {
     let quotes: Record<string, any> = {};
     
     if (sessionId) {
-      const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+      const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
       
-      if (sessionData) {
-        const kite = await getAuthenticatedKiteClient(c, sessionData.account_id);
+      if (userSession && userSession.expires_at > Date.now()) {
+        const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
         
         if (kite) {
           quotes = await kite.getQuotes(symbols);
