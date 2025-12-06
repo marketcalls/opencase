@@ -176,13 +176,29 @@ baskets.get('/:id', async (c) => {
         
         if (account?.access_token) {
           const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
-          let apiKey = c.env.KITE_API_KEY;
+          let apiKey = c.env.KITE_API_KEY || '';
           let apiSecret = c.env.KITE_API_SECRET || '';
           
-          // Try account-specific credentials
+          // Try account-specific credentials first
           if (account.kite_api_key && account.kite_api_secret) {
             apiKey = await decrypt(account.kite_api_key, encryptionKey);
             apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+          }
+          
+          // If not found, try app_config
+          if (!apiKey) {
+            const apiKeyConfig = await c.env.DB.prepare(
+              "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+            ).first<{ config_value: string }>();
+            
+            const apiSecretConfig = await c.env.DB.prepare(
+              "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+            ).first<{ config_value: string }>();
+            
+            if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+              apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+              apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+            }
           }
           
           if (apiKey) {

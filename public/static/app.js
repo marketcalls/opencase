@@ -2254,51 +2254,135 @@ function renderBasketDetail() {
   const basket = state.selectedBasket;
   if (!basket) return '<p>Loading...</p>';
   
+  // Calculate minimum investment
+  let minInvestment = basket.min_investment_calculated || 0;
+  if (!minInvestment && basket.stocks) {
+    basket.stocks.forEach(stock => {
+      if (stock.last_price && stock.weight_percentage > 0) {
+        const minForStock = stock.last_price / (stock.weight_percentage / 100);
+        if (minForStock > minInvestment) {
+          minInvestment = minForStock;
+        }
+      }
+    });
+    minInvestment = Math.ceil(minInvestment / 100) * 100;
+  }
+  
+  // Calculate shares for each stock based on min investment
+  const stocksWithShares = (basket.stocks || []).map(stock => {
+    let shares = 0;
+    if (stock.last_price && stock.weight_percentage && minInvestment > 0) {
+      const amountForStock = minInvestment * (stock.weight_percentage / 100);
+      shares = Math.floor(amountForStock / stock.last_price);
+    }
+    return { ...stock, calculated_shares: shares };
+  });
+  
   return `
     <div class="space-y-6">
       <div class="flex items-center justify-between">
         <div class="flex items-center space-x-4">
           <button onclick="setView('baskets')" class="text-gray-500 hover:text-gray-700">
-            <i class="fas fa-arrow-left"></i>
+            <i class="fas fa-arrow-left text-xl"></i>
           </button>
           <div>
             <h1 class="text-2xl font-bold text-gray-900">${basket.name}</h1>
             <p class="text-gray-500">${basket.description || ''}</p>
           </div>
         </div>
-        <div class="flex space-x-2">
-          <button onclick="investInBasket(${basket.id})" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+        <div class="flex items-center space-x-4">
+          <button onclick="refreshBasketPrices(${basket.id})" class="text-gray-500 hover:text-gray-700" title="Refresh prices">
+            <i class="fas fa-sync-alt"></i>
+          </button>
+          <button onclick="investInBasket(${basket.id})" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
             <i class="fas fa-shopping-cart mr-2"></i>Invest
           </button>
         </div>
       </div>
 
-      <div class="bg-white rounded-xl shadow-sm p-6">
-        <h2 class="font-semibold mb-4">Stocks (${basket.stocks?.length || 0})</h2>
-        <table class="w-full">
-          <thead class="bg-gray-50">
-            <tr>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y">
-            ${(basket.stocks || []).map(stock => `
-              <tr class="hover:bg-gray-50">
-                <td class="px-4 py-3">
-                  <p class="font-medium">${stock.trading_symbol}</p>
-                  <p class="text-xs text-gray-500">${stock.company_name || ''} • ${stock.exchange}</p>
-                </td>
-                <td class="px-4 py-3 text-right">${stock.weight_percentage?.toFixed(2)}%</td>
-                <td class="px-4 py-3 text-right">${stock.last_price ? formatCurrency(stock.last_price) : '-'}</td>
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Stocks</p>
+          <p class="text-2xl font-bold">${basket.stocks?.length || 0}</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Theme</p>
+          <p class="text-2xl font-bold">${basket.theme || 'Custom'}</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Min Investment</p>
+          <p class="text-2xl font-bold text-indigo-600">${minInvestment > 0 ? formatCurrency(minInvestment) : 'N/A'}</p>
+          <p class="text-xs text-gray-400">Based on current LTP</p>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm">
+        <div class="p-4 border-b flex justify-between items-center">
+          <h2 class="font-semibold">Stocks (${basket.stocks?.length || 0})</h2>
+          <span class="text-sm text-gray-500">
+            ${basket.stocks?.some(s => s.last_price) ? 'Prices as of ' + new Date().toLocaleTimeString() : 'Prices not available - Login to fetch LTP'}
+          </span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead class="bg-gray-50">
+              <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
+                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP (₹)</th>
+                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Shares</th>
+                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value (₹)</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody class="divide-y">
+              ${stocksWithShares.map(stock => {
+                const value = stock.last_price && stock.calculated_shares ? stock.last_price * stock.calculated_shares : 0;
+                return `
+                  <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-4">
+                      <p class="font-medium text-indigo-600">${stock.trading_symbol}</p>
+                      <p class="text-xs text-gray-500">${stock.company_name || ''} • ${stock.exchange}</p>
+                    </td>
+                    <td class="px-4 py-4 text-right font-medium">${stock.weight_percentage?.toFixed(2)}%</td>
+                    <td class="px-4 py-4 text-right">${stock.last_price ? formatNumber(stock.last_price, 2) : '<span class="text-gray-400">-</span>'}</td>
+                    <td class="px-4 py-4 text-right font-medium">${stock.calculated_shares || '<span class="text-gray-400">-</span>'}</td>
+                    <td class="px-4 py-4 text-right">${value > 0 ? formatCurrency(value) : '<span class="text-gray-400">-</span>'}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+            <tfoot class="bg-gray-50 font-medium">
+              <tr>
+                <td class="px-4 py-3">Total</td>
+                <td class="px-4 py-3 text-right">100%</td>
+                <td class="px-4 py-3 text-right"></td>
+                <td class="px-4 py-3 text-right">${stocksWithShares.reduce((sum, s) => sum + (s.calculated_shares || 0), 0)}</td>
+                <td class="px-4 py-3 text-right">${formatCurrency(minInvestment)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
     </div>
   `;
+}
+
+// Refresh basket prices
+async function refreshBasketPrices(basketId) {
+  showNotification('Refreshing prices...', 'info');
+  const res = await api.get(\`/baskets/\${basketId}\`);
+  if (res?.success) {
+    state.selectedBasket = res.data;
+    renderApp();
+    if (res.data.stocks?.some(s => s.last_price)) {
+      showNotification('Prices updated!', 'success');
+    } else {
+      showNotification('Could not fetch LTP. Make sure you are logged in.', 'warning');
+    }
+  } else {
+    showNotification('Failed to refresh prices', 'error');
+  }
 }
 
 function renderInvestmentDetail() {
