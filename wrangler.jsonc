@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stockbasket",
+  "compatibility_date": "2025-12-06",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stockbasket-db",
+      "database_id": "local-dev-db"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "stockbasket-kv"
+    }
+  ],
+  "vars": {
+    "KITE_API_KEY": "",
+    "KITE_REDIRECT_URL": "http://localhost:3000/api/auth/callback"
+  }
+}
