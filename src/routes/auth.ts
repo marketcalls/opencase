@@ -124,6 +124,8 @@ auth.get('/callback', async (c) => {
   const status = c.req.query('status');
   const apiKeyFromCallback = c.req.query('api_key'); // Zerodha includes this
   
+  console.log('[Zerodha Callback] Received callback with status:', status, 'api_key:', apiKeyFromCallback ? 'present' : 'missing');
+  
   if (status === 'cancelled') {
     return c.redirect('/accounts?error=login_cancelled');
   }
@@ -140,6 +142,7 @@ auth.get('/callback', async (c) => {
     let brokerAccountId: number | null = null;
     if (apiKeyFromCallback) {
       const storedAccountId = await c.env.KV.get(`broker_login:${apiKeyFromCallback}`);
+      console.log('[Zerodha Callback] KV lookup for broker_login:', storedAccountId ? `found account ${storedAccountId}` : 'not found');
       if (storedAccountId) {
         brokerAccountId = parseInt(storedAccountId);
         await c.env.KV.delete(`broker_login:${apiKeyFromCallback}`);
@@ -148,6 +151,7 @@ auth.get('/callback', async (c) => {
     
     // If we found a broker_account, use the new flow
     if (brokerAccountId) {
+      console.log('[Zerodha Callback] Using KV-matched account ID:', brokerAccountId);
       const brokerAccount = await c.env.DB.prepare(
         'SELECT * FROM broker_accounts WHERE id = ? AND is_active = 1'
       ).bind(brokerAccountId).first<any>();
@@ -183,51 +187,120 @@ auth.get('/callback', async (c) => {
           brokerAccountId
         ).run();
         
+        console.log('[Zerodha Callback] Successfully connected via KV lookup, redirecting to /accounts');
         return c.redirect('/accounts?success=connected');
       }
     }
     
-    // Also try to find broker_account by matching API key
+    // Also try to find broker_account by matching API key (fallback - scan all accounts)
     if (apiKeyFromCallback) {
+      console.log('[Zerodha Callback] Trying API key matching fallback...');
       const brokerAccounts = await c.env.DB.prepare(
         'SELECT * FROM broker_accounts WHERE broker_type = ? AND is_active = 1'
       ).bind('zerodha').all<any>();
       
+      console.log('[Zerodha Callback] Found', brokerAccounts.results.length, 'Zerodha accounts to check');
+      
       for (const acc of brokerAccounts.results) {
         if (acc.api_key_encrypted) {
-          const decryptedKey = await decrypt(acc.api_key_encrypted, encryptionKey);
-          if (decryptedKey === apiKeyFromCallback) {
-            const apiSecret = await decrypt(acc.api_secret_encrypted, encryptionKey);
+          try {
+            const decryptedKey = await decrypt(acc.api_key_encrypted, encryptionKey);
+            console.log('[Zerodha Callback] Comparing API keys for account', acc.id, ':', decryptedKey === apiKeyFromCallback ? 'MATCH' : 'no match');
             
-            // Exchange request token for access token
-            const kite = new KiteClient(apiKeyFromCallback, apiSecret);
-            const session = await kite.createSession(requestToken);
-            
-            // Update broker_account with session info
-            await c.env.DB.prepare(`
-              UPDATE broker_accounts SET
-                broker_user_id = ?,
-                access_token = ?,
-                refresh_token = ?,
-                token_expiry = datetime('now', '+1 day'),
-                is_connected = 1,
-                connection_status = 'connected',
-                last_connected_at = datetime('now'),
-                broker_name = ?,
-                broker_email = ?,
-                updated_at = datetime('now')
-              WHERE id = ?
-            `).bind(
-              session.user_id,
-              session.access_token,
-              session.refresh_token || null,
-              session.user_name,
-              session.email || null,
-              acc.id
-            ).run();
-            
-            return c.redirect('/accounts?success=connected');
+            if (decryptedKey === apiKeyFromCallback) {
+              const apiSecret = await decrypt(acc.api_secret_encrypted, encryptionKey);
+              
+              // Exchange request token for access token
+              const kite = new KiteClient(apiKeyFromCallback, apiSecret);
+              const session = await kite.createSession(requestToken);
+              
+              // Update broker_account with session info
+              await c.env.DB.prepare(`
+                UPDATE broker_accounts SET
+                  broker_user_id = ?,
+                  access_token = ?,
+                  refresh_token = ?,
+                  token_expiry = datetime('now', '+1 day'),
+                  is_connected = 1,
+                  connection_status = 'connected',
+                  last_connected_at = datetime('now'),
+                  broker_name = ?,
+                  broker_email = ?,
+                  updated_at = datetime('now')
+                WHERE id = ?
+              `).bind(
+                session.user_id,
+                session.access_token,
+                session.refresh_token || null,
+                session.user_name,
+                session.email || null,
+                acc.id
+              ).run();
+              
+              console.log('[Zerodha Callback] Successfully connected via API key match, redirecting to /accounts');
+              return c.redirect('/accounts?success=connected');
+            }
+          } catch (decryptError) {
+            console.error('[Zerodha Callback] Error decrypting key for account', acc.id, ':', decryptError);
           }
+        }
+      }
+      
+      // If we have an API key but couldn't match it, redirect to accounts with error
+      console.log('[Zerodha Callback] No matching broker account found, redirecting to /accounts with error');
+      return c.redirect('/accounts?error=account_not_found');
+    }
+    
+    // If no API key in callback, try to find the most recently created/updated pending Zerodha account
+    // This handles the case where Zerodha doesn't include api_key in callback
+    console.log('[Zerodha Callback] No API key in callback, trying to find pending Zerodha account...');
+    const pendingAccounts = await c.env.DB.prepare(
+      `SELECT * FROM broker_accounts 
+       WHERE broker_type = 'zerodha' AND is_active = 1 AND is_connected = 0
+       ORDER BY updated_at DESC LIMIT 1`
+    ).all<any>();
+    
+    if (pendingAccounts.results.length > 0) {
+      const acc = pendingAccounts.results[0];
+      console.log('[Zerodha Callback] Found pending Zerodha account:', acc.id, acc.account_name);
+      
+      if (acc.api_key_encrypted && acc.api_secret_encrypted) {
+        try {
+          const apiKey = await decrypt(acc.api_key_encrypted, encryptionKey);
+          const apiSecret = await decrypt(acc.api_secret_encrypted, encryptionKey);
+          
+          // Exchange request token for access token
+          const kite = new KiteClient(apiKey, apiSecret);
+          const session = await kite.createSession(requestToken);
+          
+          // Update broker_account with session info
+          await c.env.DB.prepare(`
+            UPDATE broker_accounts SET
+              broker_user_id = ?,
+              access_token = ?,
+              refresh_token = ?,
+              token_expiry = datetime('now', '+1 day'),
+              is_connected = 1,
+              connection_status = 'connected',
+              last_connected_at = datetime('now'),
+              broker_name = ?,
+              broker_email = ?,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).bind(
+            session.user_id,
+            session.access_token,
+            session.refresh_token || null,
+            session.user_name,
+            session.email || null,
+            acc.id
+          ).run();
+          
+          console.log('[Zerodha Callback] Successfully connected pending account, redirecting to /accounts');
+          return c.redirect('/accounts?success=connected');
+        } catch (sessionError) {
+          console.error('[Zerodha Callback] Failed to create session for pending account:', sessionError);
+          return c.redirect('/accounts?error=auth_failed');
         }
       }
     }
