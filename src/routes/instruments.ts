@@ -153,9 +153,9 @@ instruments.post('/download', async (c) => {
       colIndex[h.trim().toLowerCase()] = i;
     });
     
-    // Clear existing instruments for NSE and BSE
+    // Clear existing Zerodha instruments for NSE and BSE (keep AngelOne data if any)
     await c.env.DB.prepare(
-      "DELETE FROM master_instruments WHERE exchange IN ('NSE', 'BSE')"
+      "DELETE FROM master_instruments WHERE exchange IN ('NSE', 'BSE') AND (source = 'zerodha' OR source IS NULL)"
     ).run();
     
     // Process and insert instruments (only NSE/BSE equity)
@@ -253,38 +253,43 @@ function parseCSVLine(line: string): string[] {
 }
 
 /**
- * Helper to insert instruments in batch
+ * Helper to insert instruments in batch (Unified schema)
+ * Uses zerodha_token, zerodha_exchange_token, zerodha_trading_symbol columns
  */
 async function insertInstrumentsBatch(db: D1Database, instruments: any[]): Promise<void> {
   for (const inst of instruments) {
+    // Extract base symbol from trading_symbol (e.g., "RELIANCE" from "RELIANCE" or "RELIANCE-EQ")
+    const symbol = inst.trading_symbol.replace(/-EQ$/, '');
+    
     await db.prepare(`
       INSERT INTO master_instruments (
-        instrument_token, exchange_token, trading_symbol, name, exchange,
-        segment, instrument_type, tick_size, lot_size, expiry, strike
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(trading_symbol, exchange) DO UPDATE SET
-        instrument_token = excluded.instrument_token,
-        exchange_token = excluded.exchange_token,
+        symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
+        zerodha_token, zerodha_exchange_token, zerodha_trading_symbol, source, last_downloaded_from
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'zerodha', 'zerodha')
+      ON CONFLICT(symbol, exchange, instrument_type, expiry, strike) DO UPDATE SET
         name = excluded.name,
         segment = excluded.segment,
-        instrument_type = excluded.instrument_type,
         tick_size = excluded.tick_size,
         lot_size = excluded.lot_size,
-        expiry = excluded.expiry,
-        strike = excluded.strike,
+        zerodha_token = excluded.zerodha_token,
+        zerodha_exchange_token = excluded.zerodha_exchange_token,
+        zerodha_trading_symbol = excluded.zerodha_trading_symbol,
+        source = 'zerodha',
+        last_downloaded_from = 'zerodha',
         updated_at = datetime('now')
     `).bind(
-      inst.instrument_token,
-      inst.exchange_token,
-      inst.trading_symbol,
+      symbol,
       inst.name,
       inst.exchange,
-      inst.segment,
       inst.instrument_type,
+      inst.segment,
       inst.tick_size,
       inst.lot_size,
       inst.expiry,
-      inst.strike
+      inst.strike,
+      inst.instrument_token,
+      inst.exchange_token,
+      inst.trading_symbol
     ).run();
   }
 }
@@ -305,12 +310,23 @@ instruments.get('/search', async (c) => {
   }
   
   try {
+    // Use unified schema columns: symbol, zerodha_trading_symbol
     let sql = `
-      SELECT * FROM master_instruments
-      WHERE (trading_symbol LIKE ? OR name LIKE ?)
+      SELECT 
+        id, symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
+        zerodha_token, zerodha_exchange_token, zerodha_trading_symbol,
+        angelone_token, angelone_trading_symbol,
+        sector, industry, market_cap, isin, source, last_price,
+        created_at, updated_at,
+        -- Aliases for backward compatibility
+        zerodha_token as instrument_token,
+        zerodha_exchange_token as exchange_token,
+        COALESCE(zerodha_trading_symbol, symbol) as trading_symbol
+      FROM master_instruments
+      WHERE (symbol LIKE ? OR zerodha_trading_symbol LIKE ? OR name LIKE ?)
         AND instrument_type = 'EQ'
     `;
-    const params: any[] = [`${query}%`, `%${query}%`];
+    const params: any[] = [`${query}%`, `${query}%`, `%${query}%`];
     
     if (exchange) {
       sql += ' AND exchange = ?';
@@ -319,7 +335,7 @@ instruments.get('/search', async (c) => {
       sql += ' AND exchange IN ("NSE", "BSE")';
     }
     
-    sql += ' ORDER BY CASE WHEN trading_symbol = ? THEN 0 WHEN trading_symbol LIKE ? THEN 1 ELSE 2 END, trading_symbol LIMIT ?';
+    sql += ' ORDER BY CASE WHEN symbol = ? THEN 0 WHEN symbol LIKE ? THEN 1 ELSE 2 END, symbol LIMIT ?';
     params.push(query, `${query}%`, limit);
     
     const results = await c.env.DB.prepare(sql).bind(...params).all<MasterInstrument>();
@@ -334,11 +350,16 @@ instruments.get('/search', async (c) => {
         
         if (kite) {
           try {
-            const symbols = results.results.map(i => `${i.exchange}:${i.trading_symbol}`);
+            // Use zerodha_trading_symbol for Kite API calls
+            const symbols = results.results.map(i => {
+              const tradingSymbol = (i as any).zerodha_trading_symbol || (i as any).trading_symbol || i.symbol;
+              return `${i.exchange}:${tradingSymbol}`;
+            });
             const ltpData = await kite.getLTP(symbols);
             
             instrumentsWithLtp = results.results.map(inst => {
-              const key = `${inst.exchange}:${inst.trading_symbol}`;
+              const tradingSymbol = (inst as any).zerodha_trading_symbol || (inst as any).trading_symbol || inst.symbol;
+              const key = `${inst.exchange}:${tradingSymbol}`;
               return {
                 ...inst,
                 last_price: ltpData[key]?.last_price || null
@@ -375,10 +396,21 @@ instruments.get('/popular', async (c) => {
     
     const placeholders = popularSymbols.map(() => '?').join(',');
     
+    // Use unified schema: symbol column instead of trading_symbol
     const results = await c.env.DB.prepare(`
-      SELECT * FROM master_instruments
-      WHERE trading_symbol IN (${placeholders}) AND exchange = 'NSE'
-      ORDER BY trading_symbol
+      SELECT 
+        id, symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
+        zerodha_token, zerodha_exchange_token, zerodha_trading_symbol,
+        angelone_token, angelone_trading_symbol,
+        sector, industry, market_cap, isin, source, last_price,
+        created_at, updated_at,
+        -- Aliases for backward compatibility
+        zerodha_token as instrument_token,
+        zerodha_exchange_token as exchange_token,
+        COALESCE(zerodha_trading_symbol, symbol) as trading_symbol
+      FROM master_instruments
+      WHERE symbol IN (${placeholders}) AND exchange = 'NSE'
+      ORDER BY symbol
     `).bind(...popularSymbols).all<MasterInstrument>();
     
     let instrumentsWithLtp = results.results;
@@ -392,11 +424,16 @@ instruments.get('/popular', async (c) => {
         
         if (kite) {
           try {
-            const symbols = results.results.map(i => `${i.exchange}:${i.trading_symbol}`);
+            // Use zerodha_trading_symbol for Kite API calls
+            const symbols = results.results.map(i => {
+              const tradingSymbol = (i as any).zerodha_trading_symbol || (i as any).trading_symbol || i.symbol;
+              return `${i.exchange}:${tradingSymbol}`;
+            });
             const ltpData = await kite.getLTP(symbols);
             
             instrumentsWithLtp = results.results.map(inst => {
-              const key = `${inst.exchange}:${inst.trading_symbol}`;
+              const tradingSymbol = (inst as any).zerodha_trading_symbol || (inst as any).trading_symbol || inst.symbol;
+              const key = `${inst.exchange}:${tradingSymbol}`;
               return {
                 ...inst,
                 last_price: ltpData[key]?.last_price || null
@@ -500,9 +537,20 @@ instruments.get('/by-token/:token', async (c) => {
   const token = parseInt(c.req.param('token'));
   
   try {
-    const instrument = await c.env.DB.prepare(
-      'SELECT * FROM master_instruments WHERE instrument_token = ?'
-    ).bind(token).first<MasterInstrument>();
+    // Use zerodha_token in unified schema
+    const instrument = await c.env.DB.prepare(`
+      SELECT 
+        id, symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
+        zerodha_token, zerodha_exchange_token, zerodha_trading_symbol,
+        angelone_token, angelone_trading_symbol,
+        sector, industry, market_cap, isin, source, last_price,
+        created_at, updated_at,
+        -- Aliases for backward compatibility
+        zerodha_token as instrument_token,
+        zerodha_exchange_token as exchange_token,
+        COALESCE(zerodha_trading_symbol, symbol) as trading_symbol
+      FROM master_instruments WHERE zerodha_token = ?
+    `).bind(token).first<MasterInstrument>();
     
     if (!instrument) {
       return c.json(errorResponse('NOT_FOUND', 'Instrument not found'), 404);
