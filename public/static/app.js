@@ -765,15 +765,95 @@ function getTotalWeight() {
 }
 
 function adjustWeight(index, delta) {
-  const stock = state.basketStocks[index];
-  let newWeight = stock.weight_percentage + delta;
+  if (state.basketStocks.length <= 1) {
+    // Single stock always 100%
+    state.basketStocks[0].weight_percentage = 100;
+    updateBasketDisplay();
+    return;
+  }
   
-  // Clamp between 0.01 and 100
-  newWeight = Math.max(0.01, Math.min(100, newWeight));
+  const stock = state.basketStocks[index];
+  const oldWeight = stock.weight_percentage;
+  let newWeight = oldWeight + delta;
+  
+  // Clamp between 0.5 and 99.5 (leave room for other stocks)
+  const maxWeight = 100 - (state.basketStocks.length - 1) * 0.5; // Leave at least 0.5% for each other stock
+  newWeight = Math.max(0.5, Math.min(maxWeight, newWeight));
+  
+  const weightDiff = newWeight - oldWeight;
+  
+  if (Math.abs(weightDiff) < 0.01) return; // No significant change
   
   stock.weight_percentage = parseFloat(newWeight.toFixed(2));
   
+  // Redistribute the weight difference proportionally among other stocks
+  redistributeWeights(index, weightDiff);
+  
+  // Switch to custom mode
+  state.weightingScheme = 'custom';
+  const schemeSelect = document.getElementById('weightingScheme');
+  if (schemeSelect) schemeSelect.value = 'custom';
+  
   updateBasketDisplay();
+}
+
+function redistributeWeights(changedIndex, weightDiff) {
+  // Get other stocks
+  const otherStocks = state.basketStocks.filter((_, i) => i !== changedIndex);
+  if (otherStocks.length === 0) return;
+  
+  // Calculate total weight of other stocks
+  const otherTotalWeight = otherStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
+  
+  if (otherTotalWeight <= 0) {
+    // Edge case: distribute equally
+    const equalWeight = (100 - state.basketStocks[changedIndex].weight_percentage) / otherStocks.length;
+    state.basketStocks.forEach((s, i) => {
+      if (i !== changedIndex) {
+        s.weight_percentage = parseFloat(equalWeight.toFixed(2));
+      }
+    });
+    return;
+  }
+  
+  // Distribute weight change proportionally
+  state.basketStocks.forEach((s, i) => {
+    if (i !== changedIndex) {
+      const proportion = s.weight_percentage / otherTotalWeight;
+      let newWeight = s.weight_percentage - (weightDiff * proportion);
+      // Ensure minimum 0.5%
+      newWeight = Math.max(0.5, newWeight);
+      s.weight_percentage = parseFloat(newWeight.toFixed(2));
+    }
+  });
+  
+  // Normalize to ensure total is exactly 100%
+  normalizeWeights();
+}
+
+function normalizeWeights() {
+  const total = getTotalWeight();
+  if (Math.abs(total - 100) < 0.01) return; // Already close enough
+  
+  // Find the adjustment needed
+  const adjustment = 100 - total;
+  
+  // Apply adjustment to the stock with the largest weight (to minimize relative error)
+  let maxIndex = 0;
+  let maxWeight = 0;
+  state.basketStocks.forEach((s, i) => {
+    if (s.weight_percentage > maxWeight) {
+      maxWeight = s.weight_percentage;
+      maxIndex = i;
+    }
+  });
+  
+  state.basketStocks[maxIndex].weight_percentage += parseFloat(adjustment.toFixed(2));
+  
+  // Ensure all weights are at least 0.5%
+  state.basketStocks.forEach(s => {
+    s.weight_percentage = Math.max(0.5, parseFloat(s.weight_percentage.toFixed(2)));
+  });
 }
 
 function changeWeightingScheme(scheme) {
@@ -1381,7 +1461,7 @@ function renderSearchResults() {
       <div class="p-3 hover:bg-gray-50 cursor-pointer border-b last:border-0" onclick="addStock(${JSON.stringify(stock).replace(/"/g, '&quot;')})">
         <div class="flex justify-between items-center">
           <div>
-            <p class="font-medium">${stock.trading_symbol}</p>
+            <p class="font-medium">${stock.trading_symbol || stock.symbol}</p>
             <p class="text-xs text-gray-500">${stock.name || ''} • ${stock.exchange}</p>
           </div>
           ${stock.last_price ? `<span class="text-sm font-medium">${formatCurrency(stock.last_price)}</span>` : ''}
@@ -1452,11 +1532,34 @@ function addStock(stock) {
 function removeStock(index) {
   state.basketStocks.splice(index, 1);
   
-  if (state.weightingScheme === 'equal') {
-    applyEqualWeights();
-  } else {
-    updateBasketDisplay();
+  if (state.basketStocks.length === 0) {
+    // No stocks left - show empty state
+    const stocksContainer = document.querySelector('#createBasketForm .p-6:not(.border-b)');
+    if (stocksContainer) {
+      stocksContainer.innerHTML = `
+        <div class="text-center py-12 text-gray-500">
+          <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
+          <p class="text-lg">Search and add stocks to your basket</p>
+          <p class="text-sm">You can add up to 20 stocks</p>
+        </div>
+      `;
+    }
+    updateWeightDisplay();
+    return;
   }
+  
+  // Redistribute weights to maintain 100%
+  // Scale up remaining stocks proportionally
+  const currentTotal = getTotalWeight();
+  if (currentTotal > 0 && currentTotal !== 100) {
+    const scaleFactor = 100 / currentTotal;
+    state.basketStocks.forEach(s => {
+      s.weight_percentage = parseFloat((s.weight_percentage * scaleFactor).toFixed(2));
+    });
+    normalizeWeights(); // Ensure exactly 100%
+  }
+  
+  updateBasketDisplay();
   
   // If no stocks left, re-render to show empty state
   if (state.basketStocks.length === 0) {
@@ -1475,16 +1578,31 @@ function removeStock(index) {
 }
 
 function updateStockWeight(index, value) {
-  const newWeight = parseFloat(value) || 0;
-  state.basketStocks[index].weight_percentage = Math.max(0.01, Math.min(100, newWeight));
-  
-  // In custom mode, don't auto-adjust other weights
-  if (state.weightingScheme === 'equal') {
-    // In equal mode, switching to custom mode
-    state.weightingScheme = 'custom';
-    const schemeSelect = document.getElementById('weightingScheme');
-    if (schemeSelect) schemeSelect.value = 'custom';
+  if (state.basketStocks.length <= 1) {
+    // Single stock always 100%
+    state.basketStocks[0].weight_percentage = 100;
+    updateBasketDisplay();
+    return;
   }
+  
+  const newWeight = parseFloat(value) || 0;
+  const oldWeight = state.basketStocks[index].weight_percentage;
+  
+  // Clamp between 0.5 and 99.5
+  const maxWeight = 100 - (state.basketStocks.length - 1) * 0.5;
+  const clampedWeight = Math.max(0.5, Math.min(maxWeight, newWeight));
+  
+  const weightDiff = clampedWeight - oldWeight;
+  
+  state.basketStocks[index].weight_percentage = parseFloat(clampedWeight.toFixed(2));
+  
+  // Redistribute the weight difference to other stocks
+  redistributeWeights(index, weightDiff);
+  
+  // Switch to custom mode
+  state.weightingScheme = 'custom';
+  const schemeSelect = document.getElementById('weightingScheme');
+  if (schemeSelect) schemeSelect.value = 'custom';
   
   updateBasketDisplay();
 }
