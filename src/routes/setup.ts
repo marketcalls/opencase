@@ -413,22 +413,52 @@ setup.put('/credentials', async (c) => {
 
 /**
  * POST /api/setup/add-account
- * Add a new Zerodha account with its own API credentials
+ * Add a new broker account (Zerodha or Angel One)
+ * For Zerodha: Returns login URL for OAuth flow
+ * For Angel One: Returns info that TOTP login is required
  */
 setup.post('/add-account', async (c) => {
   try {
-    const { name, kite_api_key, kite_api_secret, use_app_credentials } = await c.req.json<{
+    const { name, broker_type, kite_api_key, kite_api_secret, use_app_credentials, client_code, mpin } = await c.req.json<{
       name: string;
+      broker_type?: BrokerType;
       kite_api_key?: string;
       kite_api_secret?: string;
       use_app_credentials?: boolean;
+      client_code?: string;  // For Angel One
+      mpin?: string;         // For Angel One
     }>();
     
     if (!name) {
       return c.json(errorResponse('INVALID_INPUT', 'Account name is required'), 400);
     }
     
+    // Default to zerodha for backward compatibility
+    const selectedBroker: BrokerType = broker_type || 'zerodha';
     const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+    
+    // Handle Angel One - requires TOTP login
+    if (selectedBroker === 'angelone') {
+      // Check if Angel One API is configured
+      const apiKeyConfig = await c.env.DB.prepare(
+        "SELECT config_value FROM app_config WHERE config_key = 'angelone_api_key'"
+      ).first<{ config_value: string }>();
+      
+      if (!apiKeyConfig?.config_value) {
+        return c.json(errorResponse('NO_CREDENTIALS', 'Angel One API key not configured. Please configure it in Settings first.'), 400);
+      }
+      
+      // For Angel One, we need client_code and mpin for login
+      // The actual login will happen via the /api/auth/angelone-login endpoint
+      return c.json(successResponse({
+        broker_type: 'angelone',
+        requires_totp: true,
+        message: 'Angel One requires TOTP-based login. Please enter your Client Code, MPIN, and TOTP to login.',
+        help_url: 'https://smartapi.angelbroking.com/docs'
+      }));
+    }
+    
+    // Handle Zerodha - OAuth flow
     let encryptedKey: string | null = null;
     let encryptedSecret: string | null = null;
     let loginApiKey: string;
@@ -445,7 +475,7 @@ setup.post('/add-account', async (c) => {
       ).first<{ config_value: string }>();
       
       if (!apiKeyConfig?.config_value || !apiSecretConfig?.config_value) {
-        return c.json(errorResponse('NO_CREDENTIALS', 'Please configure API credentials first'), 400);
+        return c.json(errorResponse('NO_CREDENTIALS', 'Please configure Zerodha API credentials first'), 400);
       }
       
       loginApiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
@@ -473,19 +503,21 @@ setup.post('/add-account', async (c) => {
     const tempId = `PENDING_${Date.now()}`;
     
     const result = await c.env.DB.prepare(`
-      INSERT INTO accounts (zerodha_user_id, name, kite_api_key, kite_api_secret, is_primary, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
-    `).bind(tempId, name, encryptedKey, encryptedSecret, isPrimary).run();
+      INSERT INTO accounts (zerodha_user_id, broker_type, name, kite_api_key, kite_api_secret, is_primary, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `).bind(tempId, 'zerodha', name, encryptedKey, encryptedSecret, isPrimary).run();
     
     const accountId = result.meta.last_row_id;
     
-    // Generate login URL
+    // Generate login URL for Zerodha
     const kite = new KiteClient(loginApiKey, loginApiSecret);
     const loginUrl = kite.getLoginUrl();
     
     return c.json(successResponse({
       account_id: accountId,
+      broker_type: 'zerodha',
       login_url: loginUrl,
+      requires_totp: false,
       message: 'Account added. Please login to Zerodha to complete setup.'
     }));
   } catch (error) {

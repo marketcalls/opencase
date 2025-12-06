@@ -1,12 +1,13 @@
 /**
  * Authentication Routes
- * Handles Zerodha OAuth flow and session management
+ * Handles Zerodha OAuth flow, Angel One TOTP login, and session management
  */
 
 import { Hono } from 'hono';
-import type { Bindings, Variables, Account, SessionData } from '../types';
+import type { Bindings, Variables, Account, SessionData, BrokerType } from '../types';
 import { KiteClient } from '../lib/kite';
-import { successResponse, errorResponse, generateSessionId, decrypt } from '../lib/utils';
+import { AngelOneBroker } from '../brokers/angelone';
+import { successResponse, errorResponse, generateSessionId, decrypt, encrypt } from '../lib/utils';
 
 const auth = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -211,6 +212,8 @@ auth.get('/callback', async (c) => {
     const sessionData: SessionData = {
       account_id: account.id,
       zerodha_user_id: session.user_id,
+      broker_user_id: session.user_id,
+      broker_type: 'zerodha',
       access_token: session.access_token,
       name: session.user_name,
       email: session.email,
@@ -276,6 +279,132 @@ auth.get('/accounts', async (c) => {
 });
 
 /**
+ * POST /api/auth/angelone-login
+ * Handle Angel One TOTP-based login
+ */
+auth.post('/angelone-login', async (c) => {
+  try {
+    const { client_code, mpin, totp } = await c.req.json<{
+      client_code: string;
+      mpin: string;
+      totp: string;
+    }>();
+    
+    if (!client_code || !mpin || !totp) {
+      return c.json(errorResponse('INVALID_INPUT', 'Client Code, MPIN, and TOTP are required'), 400);
+    }
+    
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+    
+    // Get Angel One API credentials from app_config
+    const apiKeyConfig = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'angelone_api_key'"
+    ).first<{ config_value: string }>();
+    
+    if (!apiKeyConfig?.config_value) {
+      return c.json(errorResponse('NO_API_KEY', 'Angel One API key not configured. Please configure it in Settings.'), 400);
+    }
+    
+    const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+    
+    // Create Angel One broker instance and login
+    const angelone = new AngelOneBroker(apiKey, '');
+    
+    let session;
+    try {
+      session = await angelone.createSession(client_code, mpin, totp);
+    } catch (loginError: any) {
+      console.error('Angel One login error:', loginError);
+      return c.json(errorResponse('AUTH_FAILED', loginError.message || 'Login failed. Please check your credentials and TOTP.'), 401);
+    }
+    
+    // Check if account exists
+    let account = await c.env.DB.prepare(
+      'SELECT * FROM accounts WHERE zerodha_user_id = ? OR (client_code = ? AND broker_type = ?)'
+    ).bind(client_code, client_code, 'angelone').first<Account>();
+    
+    if (account) {
+      // Update existing account
+      await c.env.DB.prepare(`
+        UPDATE accounts SET 
+          name = ?,
+          email = ?,
+          access_token = ?,
+          refresh_token = ?,
+          broker_type = 'angelone',
+          client_code = ?,
+          mpin_encrypted = ?,
+          access_token_expiry = datetime('now', '+1 day'),
+          last_login_at = datetime('now'),
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(
+        session.userName,
+        session.email || null,
+        session.accessToken,
+        session.refreshToken || null,
+        client_code,
+        await encrypt(mpin, encryptionKey),
+        account.id
+      ).run();
+    } else {
+      // Create new account
+      const result = await c.env.DB.prepare(`
+        INSERT INTO accounts (zerodha_user_id, broker_type, name, email, client_code, mpin_encrypted, access_token, refresh_token, access_token_expiry, is_primary, last_login_at)
+        VALUES (?, 'angelone', ?, ?, ?, ?, ?, ?, datetime('now', '+1 day'), 1, datetime('now'))
+      `).bind(
+        client_code,
+        session.userName,
+        session.email || null,
+        client_code,
+        await encrypt(mpin, encryptionKey),
+        session.accessToken,
+        session.refreshToken || null
+      ).run();
+      
+      account = await c.env.DB.prepare(
+        'SELECT * FROM accounts WHERE zerodha_user_id = ?'
+      ).bind(client_code).first<Account>();
+    }
+    
+    if (!account) {
+      return c.json(errorResponse('ACCOUNT_ERROR', 'Failed to create account'), 500);
+    }
+    
+    // Create session
+    const sessionId = generateSessionId();
+    const sessionData: SessionData = {
+      account_id: account.id,
+      zerodha_user_id: client_code,
+      broker_user_id: client_code,
+      broker_type: 'angelone',
+      access_token: session.accessToken,
+      name: session.userName,
+      email: session.email || null,
+      expires_at: Date.now() + (24 * 60 * 60 * 1000) // 24 hours
+    };
+    
+    await c.env.KV.put(`session:${sessionId}`, JSON.stringify(sessionData), {
+      expirationTtl: 86400 // 24 hours
+    });
+    
+    return c.json(successResponse({
+      session_id: sessionId,
+      account: {
+        id: account.id,
+        user_id: client_code,
+        name: session.userName,
+        email: session.email,
+        broker_type: 'angelone'
+      }
+    }));
+  } catch (error) {
+    console.error('Angel One login error:', error);
+    return c.json(errorResponse('AUTH_ERROR', 'Failed to login with Angel One'), 500);
+  }
+});
+
+/**
  * POST /api/auth/switch-account
  * Switch to a different account
  */
@@ -304,6 +433,8 @@ auth.post('/switch-account', async (c) => {
     const sessionData: SessionData = {
       account_id: account.id,
       zerodha_user_id: account.zerodha_user_id,
+      broker_user_id: account.client_code || account.zerodha_user_id,
+      broker_type: (account.broker_type as BrokerType) || 'zerodha',
       access_token: account.access_token,
       name: account.name,
       email: account.email,

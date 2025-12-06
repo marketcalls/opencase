@@ -1249,74 +1249,88 @@ function renderModals() {
           </button>
         </div>
         
-        <form onsubmit="handleAddAccount(event)">
-          <!-- Broker Selection -->
-          <div class="mb-6">
-            <label class="block text-sm font-medium text-gray-700 mb-3">Select Broker</label>
-            <div class="grid grid-cols-2 gap-3">
-              <label class="cursor-pointer">
-                <input type="radio" name="add_broker" value="zerodha" checked onchange="updateAddAccountForm()" class="hidden">
-                <div class="add-broker-card border-2 rounded-lg p-4 text-center border-indigo-500 bg-indigo-50">
-                  <i class="fas fa-chart-line text-2xl text-indigo-600 mb-2"></i>
-                  <p class="font-semibold">Zerodha Kite</p>
-                  <p class="text-xs text-gray-500">OAuth Login</p>
-                </div>
-              </label>
-              <label class="cursor-pointer">
-                <input type="radio" name="add_broker" value="angelone" onchange="updateAddAccountForm()" class="hidden">
-                <div class="add-broker-card border-2 rounded-lg p-4 text-center border-gray-200 hover:border-indigo-300">
-                  <i class="fas fa-chart-bar text-2xl text-orange-600 mb-2"></i>
-                  <p class="font-semibold">Angel One</p>
-                  <p class="text-xs text-gray-500">TOTP Login</p>
-                </div>
-              </label>
+        <!-- Step 1: Broker Selection (shown by default) -->
+        <div id="addAccountStep1">
+          <form onsubmit="handleAddAccount(event)">
+            <!-- Broker Selection -->
+            <div class="mb-6">
+              <label class="block text-sm font-medium text-gray-700 mb-3">Select Broker</label>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="cursor-pointer">
+                  <input type="radio" name="add_broker" value="zerodha" checked onchange="updateAddAccountForm()" class="hidden">
+                  <div class="add-broker-card border-2 rounded-lg p-4 text-center border-indigo-500 bg-indigo-50">
+                    <i class="fas fa-chart-line text-2xl text-indigo-600 mb-2"></i>
+                    <p class="font-semibold">Zerodha Kite</p>
+                    <p class="text-xs text-gray-500">OAuth Login</p>
+                  </div>
+                </label>
+                <label class="cursor-pointer">
+                  <input type="radio" name="add_broker" value="angelone" onchange="updateAddAccountForm()" class="hidden">
+                  <div class="add-broker-card border-2 rounded-lg p-4 text-center border-gray-200 hover:border-indigo-300">
+                    <i class="fas fa-chart-bar text-2xl text-orange-600 mb-2"></i>
+                    <p class="font-semibold">Angel One</p>
+                    <p class="text-xs text-gray-500">TOTP Login</p>
+                  </div>
+                </label>
+              </div>
             </div>
-          </div>
-          
-          <div id="addAccountHelp" class="bg-blue-50 rounded-lg p-3 mb-4">
-            <p class="text-sm text-blue-800">
-              <i class="fas fa-info-circle mr-1"></i>
-              <span id="addAccountHelpText">Get credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a></span>
-            </p>
-          </div>
-          
-          <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-1">Account Name</label>
-            <input type="text" id="addAccountName" required class="w-full px-4 py-2 border rounded-lg" placeholder="e.g., Trading Account">
-          </div>
-          
-          <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
-            <input type="text" id="addAccountApiKey" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Key">
-          </div>
-          
-          <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-1">API Secret</label>
-            <input type="password" id="addAccountApiSecret" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Secret">
-          </div>
-          
-          <div id="addAccountAngeloneFields" class="hidden">
-            <div class="mb-4">
-              <label class="block text-sm font-medium text-gray-700 mb-1">Client Code <span class="text-red-500">*</span></label>
-              <input type="text" id="addAccountClientCode" class="w-full px-4 py-2 border rounded-lg" placeholder="Your Client Code">
+            
+            <div id="addAccountHelp" class="bg-blue-50 rounded-lg p-3 mb-4">
+              <p class="text-sm text-blue-800">
+                <i class="fas fa-info-circle mr-1"></i>
+                <span id="addAccountHelpText">Get credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a></span>
+              </p>
             </div>
-            <div class="mb-4">
-              <label class="block text-sm font-medium text-gray-700 mb-1">MPIN (Optional)</label>
-              <input type="password" id="addAccountMpin" class="w-full px-4 py-2 border rounded-lg" placeholder="4-digit MPIN">
+            
+            <!-- Zerodha Fields -->
+            <div id="zerodhaFields">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Account Name</label>
+                <input type="text" id="addAccountName" class="w-full px-4 py-2 border rounded-lg" placeholder="e.g., Trading Account">
+              </div>
+              
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                <input type="text" id="addAccountApiKey" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Key">
+              </div>
+              
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">API Secret</label>
+                <input type="password" id="addAccountApiSecret" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Secret">
+              </div>
+              
+              <div class="mb-6">
+                <label class="flex items-center">
+                  <input type="checkbox" id="addAccountUseAppCreds" class="mr-2">
+                  <span class="text-sm">Use app-level credentials (if already configured)</span>
+                </label>
+              </div>
             </div>
-          </div>
-          
-          <div class="mb-6">
-            <label class="flex items-center">
-              <input type="checkbox" id="addAccountUseAppCreds" class="mr-2">
-              <span class="text-sm">Use app-level credentials (if already configured)</span>
-            </label>
-          </div>
-          
-          <button type="submit" id="addAccountBtn" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
-            <i class="fas fa-plus mr-2"></i>Add Account & Login
-          </button>
-        </form>
+            
+            <!-- Angel One Fields -->
+            <div id="addAccountAngeloneFields" class="hidden">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Client Code <span class="text-red-500">*</span></label>
+                <input type="text" id="addAccountClientCode" class="w-full px-4 py-2 border rounded-lg" placeholder="Your Angel One Client Code">
+                <p class="text-xs text-gray-500 mt-1">Your Angel One demat account ID</p>
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">MPIN <span class="text-red-500">*</span></label>
+                <input type="password" id="addAccountMpin" class="w-full px-4 py-2 border rounded-lg" placeholder="Your 4-digit MPIN">
+                <p class="text-xs text-gray-500 mt-1">Your Angel One trading MPIN</p>
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">TOTP <span class="text-red-500">*</span></label>
+                <input type="text" id="addAccountTotp" class="w-full px-4 py-2 border rounded-lg font-mono text-lg tracking-widest" placeholder="123456" maxlength="6" pattern="[0-9]{6}">
+                <p class="text-xs text-gray-500 mt-1">6-digit code from your authenticator app (Google Authenticator, etc.)</p>
+              </div>
+            </div>
+            
+            <button type="submit" id="addAccountBtn" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
+              <i class="fas fa-plus mr-2"></i>Add Account & Login
+            </button>
+          </form>
+        </div>
       </div>
     </div>
 
@@ -1896,7 +1910,9 @@ function hideAddAccountModal() {
 function updateAddAccountForm() {
   const broker = document.querySelector('input[name="add_broker"]:checked').value;
   const angeloneFields = document.getElementById('addAccountAngeloneFields');
+  const zerodhaFields = document.getElementById('zerodhaFields');
   const helpText = document.getElementById('addAccountHelpText');
+  const submitBtn = document.getElementById('addAccountBtn');
   
   // Update visual selection
   document.querySelectorAll('.add-broker-card').forEach(card => {
@@ -1908,10 +1924,14 @@ function updateAddAccountForm() {
   
   if (broker === 'zerodha') {
     angeloneFields.classList.add('hidden');
+    zerodhaFields.classList.remove('hidden');
     helpText.innerHTML = 'Get credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a>';
+    submitBtn.innerHTML = '<i class="fas fa-plus mr-2"></i>Add Account & Login';
   } else {
     angeloneFields.classList.remove('hidden');
-    helpText.innerHTML = 'Get credentials from <a href="https://smartapi.angelbroking.com" target="_blank" class="underline font-medium">Angel One Smart API</a>';
+    zerodhaFields.classList.add('hidden');
+    helpText.innerHTML = 'Login with your Angel One credentials. Get API key from <a href="https://smartapi.angelbroking.com" target="_blank" class="underline font-medium">Angel One Smart API</a>';
+    submitBtn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>Login with TOTP';
   }
 }
 
@@ -1919,11 +1939,64 @@ async function handleAddAccount(e) {
   e.preventDefault();
   
   const broker = document.querySelector('input[name="add_broker"]:checked').value;
+  const btn = document.getElementById('addAccountBtn');
+  
+  // Handle Angel One TOTP login
+  if (broker === 'angelone') {
+    const clientCode = document.getElementById('addAccountClientCode').value;
+    const mpin = document.getElementById('addAccountMpin').value;
+    const totp = document.getElementById('addAccountTotp').value;
+    
+    if (!clientCode || !mpin || !totp) {
+      showNotification('Please enter Client Code, MPIN, and TOTP', 'warning');
+      return;
+    }
+    
+    if (totp.length !== 6 || !/^\d{6}$/.test(totp)) {
+      showNotification('TOTP must be a 6-digit number', 'warning');
+      return;
+    }
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Logging in...';
+    
+    try {
+      const res = await api.post('/auth/angelone-login', {
+        client_code: clientCode,
+        mpin: mpin,
+        totp: totp
+      });
+      
+      if (res?.success) {
+        // Store session and redirect
+        localStorage.setItem('session_id', res.data.session_id);
+        state.sessionId = res.data.session_id;
+        showNotification(`Welcome, ${res.data.account.name}! Login successful.`, 'success');
+        hideAddAccountModal();
+        await loadDashboardData();
+        renderApp();
+      } else {
+        showNotification(res?.error?.message || 'Login failed. Check your credentials and TOTP.', 'error');
+        // Clear TOTP field for retry
+        document.getElementById('addAccountTotp').value = '';
+        document.getElementById('addAccountTotp').focus();
+      }
+    } catch (err) {
+      console.error('Angel One login error:', err);
+      showNotification('Login failed. Please try again.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>Login with TOTP';
+    }
+    return;
+  }
+  
+  // Handle Zerodha OAuth login
   const name = document.getElementById('addAccountName').value;
   const useAppCreds = document.getElementById('addAccountUseAppCreds').checked;
   
   const payload = {
-    name: name,
+    name: name || 'Zerodha Account',
     broker_type: broker,
     use_app_credentials: useAppCreds
   };
@@ -1934,16 +2007,8 @@ async function handleAddAccount(e) {
     
     if (apiKey) payload.kite_api_key = apiKey;
     if (apiSecret) payload.kite_api_secret = apiSecret;
-    
-    if (broker === 'angelone') {
-      const clientCode = document.getElementById('addAccountClientCode').value;
-      if (clientCode) payload.client_code = clientCode;
-      const mpin = document.getElementById('addAccountMpin').value;
-      if (mpin) payload.mpin = mpin;
-    }
   }
   
-  const btn = document.getElementById('addAccountBtn');
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Adding...';
   
@@ -1953,7 +2018,7 @@ async function handleAddAccount(e) {
     if (res?.success) {
       hideAddAccountModal();
       if (res.data.login_url) {
-        showNotification('Redirecting to broker login...', 'info');
+        showNotification('Redirecting to Zerodha login...', 'info');
         window.location.href = res.data.login_url;
       } else {
         showNotification('Account added! Please configure login.', 'success');
