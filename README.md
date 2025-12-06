@@ -185,6 +185,8 @@ A self-hostable SaaS platform for creating, managing, and investing in custom st
 
 ## Local Development
 
+### Quick Start (All Platforms)
+
 ```bash
 # Install dependencies
 npm install
@@ -201,9 +203,168 @@ npm run build
 # Start development server
 npm run dev:sandbox
 
-# Or with PM2
+# Or with PM2 (sandbox/Linux)
 pm2 start ecosystem.config.cjs
 ```
+
+### Windows Local Deployment (Step-by-Step)
+
+#### Prerequisites
+
+1. **Node.js 18+**: Download from [nodejs.org](https://nodejs.org/en/download/) - LTS version recommended
+2. **Git**: Download from [git-scm.com](https://git-scm.com/download/win)
+
+#### Step 1: Download the Project
+
+**Option A: Download from release**
+```powershell
+# Download the backup archive
+curl -L -o stockbasket.tar.gz "https://www.genspark.ai/api/files/s/N1FCvJI9"
+
+# Extract the archive (in PowerShell)
+tar -xzf stockbasket.tar.gz
+
+# Navigate to the project directory
+cd home\user\webapp
+```
+
+**Option B: Clone from GitHub (if available)**
+```powershell
+git clone https://github.com/your-username/stockbasket.git
+cd stockbasket
+```
+
+#### Step 2: Install Dependencies
+
+```powershell
+npm install
+```
+
+**Note:** This may take 2-5 minutes. If you encounter permission errors, try running PowerShell as Administrator.
+
+#### Step 3: Setup Local Database
+
+```powershell
+# Apply database migrations
+npm run db:migrate:local
+
+# Seed with template baskets
+npm run db:seed
+```
+
+**Note:** This creates a local SQLite database in `.wrangler/state/v3/d1/` folder.
+
+#### Step 4: Configure API Credentials (Optional)
+
+**Option A: Configure via Web UI (Recommended)**
+- Start the app first (Step 5)
+- Open `http://localhost:3000` in your browser
+- Click "Setup Now" on the homepage
+- Enter your Kite API Key and Secret
+- Credentials will be encrypted and stored in the database
+
+**Option B: Create a `.dev.vars` file in project root**
+```
+KITE_API_KEY=your_api_key_here
+KITE_API_SECRET=your_api_secret_here
+KITE_REDIRECT_URL=http://localhost:3000/api/auth/callback
+ENCRYPTION_KEY=your-32-character-encryption-key!
+```
+
+**Get API credentials:**
+1. Go to [Kite Connect Developer Portal](https://developers.kite.trade)
+2. Create a new app
+3. Set Redirect URL to `http://localhost:3000/api/auth/callback`
+4. Copy the API Key and API Secret
+
+#### Step 5: Build and Run
+
+```powershell
+# Build the project (required before first run)
+npm run build
+
+# Start the development server
+npm run dev:sandbox
+```
+
+**Alternative (with hot reload):**
+```powershell
+npm run dev
+```
+
+#### Step 6: Access the Application
+
+Open your browser and go to:
+- **Home Page**: `http://localhost:3000`
+- **Dashboard**: `http://localhost:3000/dashboard`
+
+### Windows Troubleshooting
+
+#### Port 3000 in use
+```powershell
+# Find and kill process using port 3000
+netstat -ano | findstr :3000
+taskkill /PID <PID_NUMBER> /F
+
+# Or use a different port
+$env:PORT="3001"; npm run dev
+```
+
+#### Node.js not found
+1. Reinstall Node.js from [nodejs.org](https://nodejs.org)
+2. Restart PowerShell/Terminal after installation
+3. Verify: `node --version` and `npm --version`
+
+#### npm install fails
+```powershell
+# Clear npm cache
+npm cache clean --force
+
+# Delete node_modules and reinstall
+Remove-Item -Recurse -Force node_modules
+Remove-Item package-lock.json
+npm install
+```
+
+#### Long path errors (Windows specific)
+```powershell
+# Enable long paths in Git
+git config --system core.longpaths true
+
+# Or run as Administrator and enable in Windows
+# Settings > System > For Developers > Enable "Enable long paths"
+```
+
+#### Wrangler login issues
+```powershell
+# Clear Wrangler cache
+Remove-Item -Recurse -Force "$env:USERPROFILE\.wrangler"
+
+# Login again
+npx wrangler login
+```
+
+#### Database migration errors
+```powershell
+# Reset local database completely
+Remove-Item -Recurse -Force .wrangler
+npm run db:migrate:local
+npm run db:seed
+```
+
+### NPM Scripts Reference
+
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Start Vite dev server with hot reload |
+| `npm run dev:sandbox` | Start Wrangler Pages dev server (local D1) |
+| `npm run dev:d1` | Start with D1 database bindings |
+| `npm run build` | Build for production |
+| `npm run db:migrate:local` | Apply migrations to local database |
+| `npm run db:migrate:prod` | Apply migrations to production |
+| `npm run db:seed` | Seed database with templates |
+| `npm run db:reset` | Reset local database |
+| `npm run deploy` | Build and deploy to Cloudflare Pages |
 
 ## Deployment to Cloudflare Pages
 

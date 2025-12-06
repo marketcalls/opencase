@@ -353,4 +353,112 @@ sip.get('/pending-executions', async (c) => {
   }
 });
 
+/**
+ * POST /api/sip/:id/execute
+ * Execute a pending SIP (manual or scheduled)
+ */
+sip.post('/:id/execute', async (c) => {
+  const sipId = parseInt(c.req.param('id'));
+  const session = c.get('session') as SessionData;
+  
+  try {
+    const sipData = await c.env.DB.prepare(`
+      SELECT s.*, b.name as basket_name
+      FROM sips s
+      JOIN baskets b ON s.basket_id = b.id
+      WHERE s.id = ? AND s.account_id = ? AND s.status = 'ACTIVE'
+    `).bind(sipId, session.account_id).first<SIP & { basket_name: string }>();
+    
+    if (!sipData) {
+      return c.json(errorResponse('NOT_FOUND', 'SIP not found or not active'), 404);
+    }
+    
+    // Check if already executed today
+    const today = new Date().toISOString().split('T')[0];
+    const existingExecution = await c.env.DB.prepare(`
+      SELECT * FROM sip_executions 
+      WHERE sip_id = ? AND scheduled_date = ? AND status IN ('COMPLETED', 'PENDING')
+    `).bind(sipId, today).first();
+    
+    if (existingExecution) {
+      return c.json(errorResponse('ALREADY_EXECUTED', 'SIP already executed today'), 400);
+    }
+    
+    // Create execution record
+    const execResult = await c.env.DB.prepare(`
+      INSERT INTO sip_executions (sip_id, scheduled_date, amount, status)
+      VALUES (?, ?, ?, 'PENDING')
+    `).bind(sipId, today, sipData.amount).run();
+    
+    const executionId = execResult.meta.last_row_id;
+    
+    // Trigger buy order (redirect to investments buy endpoint internally)
+    // This would be called via the investments route
+    
+    // Update next execution date
+    const nextDate = getNextSIPDate(
+      sipData.frequency,
+      sipData.day_of_week ?? undefined,
+      sipData.day_of_month ?? undefined,
+      new Date()
+    );
+    
+    await c.env.DB.prepare(`
+      UPDATE sips SET 
+        next_execution_date = ?,
+        completed_installments = completed_installments + 1,
+        total_invested = total_invested + ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(nextDate.toISOString().split('T')[0], sipData.amount, sipId).run();
+    
+    return c.json(successResponse({
+      execution_id: executionId,
+      sip_id: sipId,
+      amount: sipData.amount,
+      basket_id: sipData.basket_id,
+      next_execution_date: nextDate.toISOString().split('T')[0],
+      message: 'SIP execution initiated. Please complete the buy order.'
+    }));
+  } catch (error) {
+    console.error('Execute SIP error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to execute SIP'), 500);
+  }
+});
+
+/**
+ * GET /api/sip/:id/history
+ * Get SIP execution history
+ */
+sip.get('/:id/history', async (c) => {
+  const sipId = parseInt(c.req.param('id'));
+  const session = c.get('session') as SessionData;
+  const limit = parseInt(c.req.query('limit') || '50');
+  
+  try {
+    // Verify ownership
+    const sipData = await c.env.DB.prepare(
+      'SELECT * FROM sips WHERE id = ? AND account_id = ?'
+    ).bind(sipId, session.account_id).first();
+    
+    if (!sipData) {
+      return c.json(errorResponse('NOT_FOUND', 'SIP not found'), 404);
+    }
+    
+    const history = await c.env.DB.prepare(`
+      SELECT e.*, t.total_amount as transaction_amount, t.status as transaction_status
+      FROM sip_executions e
+      LEFT JOIN transactions t ON e.transaction_id = t.id
+      WHERE e.sip_id = ?
+      ORDER BY e.scheduled_date DESC
+      LIMIT ?
+    `).bind(sipId, limit).all();
+    
+    return c.json(successResponse(history.results));
+  } catch (error) {
+    console.error('SIP history error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch SIP history'), 500);
+  }
+});
+
 export default sip;

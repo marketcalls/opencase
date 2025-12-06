@@ -1,10 +1,10 @@
 /**
  * Setup Routes
- * Handles initial app configuration and API key setup
+ * Zero-config API key setup, credential management
  */
 
 import { Hono } from 'hono';
-import type { Bindings, Variables, SetupRequest, Account } from '../types';
+import type { Bindings, Variables, SetupRequest, Account, SessionData } from '../types';
 import { successResponse, errorResponse, encrypt, decrypt } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
 
@@ -12,10 +12,11 @@ const setup = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 /**
  * GET /api/setup/status
- * Check if the app is configured
+ * Check if the app is configured (zero-config check)
  */
 setup.get('/status', async (c) => {
   try {
+    // Check for API key in database (not env vars - zero config)
     const apiKeyConfig = await c.env.DB.prepare(
       "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
     ).first<{ config_value: string }>();
@@ -24,27 +25,45 @@ setup.get('/status', async (c) => {
       'SELECT COUNT(*) as count FROM accounts WHERE zerodha_user_id != "SYSTEM"'
     ).first<{ count: number }>();
     
-    const hasApiKey = !!apiKeyConfig?.config_value || !!c.env.KITE_API_KEY;
+    // Check if master instruments are downloaded
+    const instrumentsCount = await c.env.DB.prepare(
+      'SELECT COUNT(*) as count FROM master_instruments'
+    ).first<{ count: number }>();
+    
+    const lastDownload = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'instruments_last_download'"
+    ).first<{ config_value: string }>();
+    
+    const hasApiKey = !!apiKeyConfig?.config_value;
     const hasAccounts = (accountsCount?.count || 0) > 0;
+    const hasInstruments = (instrumentsCount?.count || 0) > 0;
     
     return c.json(successResponse({
       is_configured: hasApiKey,
       has_accounts: hasAccounts,
-      needs_setup: !hasApiKey
+      has_instruments: hasInstruments,
+      instruments_count: instrumentsCount?.count || 0,
+      instruments_last_download: lastDownload?.config_value || null,
+      needs_setup: !hasApiKey,
+      needs_instruments_download: !hasInstruments
     }));
   } catch (error) {
     console.error('Setup status error:', error);
     return c.json(successResponse({
       is_configured: false,
       has_accounts: false,
-      needs_setup: true
+      has_instruments: false,
+      instruments_count: 0,
+      instruments_last_download: null,
+      needs_setup: true,
+      needs_instruments_download: true
     }));
   }
 });
 
 /**
  * POST /api/setup/configure
- * Configure Kite API credentials
+ * Configure Kite API credentials (initial setup - zero config)
  */
 setup.post('/configure', async (c) => {
   try {
@@ -62,7 +81,8 @@ setup.post('/configure', async (c) => {
       return c.json(errorResponse('INVALID_CREDENTIALS', 'Invalid API key format'), 400);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+    // Use a default encryption key for zero-config setup
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
     
     // Encrypt and store credentials
     const encryptedKey = await encrypt(kite_api_key, encryptionKey);
@@ -84,11 +104,144 @@ setup.post('/configure', async (c) => {
     
     return c.json(successResponse({
       configured: true,
-      message: 'API credentials configured successfully'
+      message: 'API credentials configured successfully. You can now login with Zerodha.'
     }));
   } catch (error) {
     console.error('Configure error:', error);
     return c.json(errorResponse('CONFIG_ERROR', 'Failed to save configuration'), 500);
+  }
+});
+
+/**
+ * GET /api/setup/credentials
+ * Get current API credentials status (requires auth)
+ */
+setup.get('/credentials', async (c) => {
+  const sessionId = c.req.header('X-Session-ID');
+  
+  if (!sessionId) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
+  }
+  
+  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+  if (!sessionData) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
+  }
+  
+  try {
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    
+    // Get app-level credentials
+    const apiKeyConfig = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+    ).first<{ config_value: string }>();
+    
+    let apiKeyMasked = '';
+    if (apiKeyConfig?.config_value) {
+      const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+      apiKeyMasked = apiKey.substring(0, 4) + '****' + apiKey.substring(apiKey.length - 4);
+    }
+    
+    // Get account-level credentials
+    const account = await c.env.DB.prepare(
+      'SELECT kite_api_key, kite_api_secret FROM accounts WHERE id = ?'
+    ).bind(sessionData.account_id).first<{ kite_api_key: string | null; kite_api_secret: string | null }>();
+    
+    let accountApiKeyMasked = '';
+    if (account?.kite_api_key) {
+      const accountApiKey = await decrypt(account.kite_api_key, encryptionKey);
+      accountApiKeyMasked = accountApiKey.substring(0, 4) + '****' + accountApiKey.substring(accountApiKey.length - 4);
+    }
+    
+    return c.json(successResponse({
+      app_api_key: apiKeyMasked,
+      account_api_key: accountApiKeyMasked,
+      has_app_credentials: !!apiKeyConfig?.config_value,
+      has_account_credentials: !!account?.kite_api_key
+    }));
+  } catch (error) {
+    console.error('Get credentials error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to get credentials'), 500);
+  }
+});
+
+/**
+ * PUT /api/setup/credentials
+ * Update API credentials (requires auth)
+ */
+setup.put('/credentials', async (c) => {
+  const sessionId = c.req.header('X-Session-ID');
+  
+  if (!sessionId) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
+  }
+  
+  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
+  if (!sessionData) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
+  }
+  
+  try {
+    const { kite_api_key, kite_api_secret, update_type = 'app' } = await c.req.json<{
+      kite_api_key: string;
+      kite_api_secret: string;
+      update_type?: 'app' | 'account';
+    }>();
+    
+    if (!kite_api_key || !kite_api_secret) {
+      return c.json(errorResponse('INVALID_INPUT', 'API key and secret are required'), 400);
+    }
+    
+    // Validate credentials
+    try {
+      const kite = new KiteClient(kite_api_key, kite_api_secret);
+      kite.getLoginUrl();
+    } catch (error) {
+      return c.json(errorResponse('INVALID_CREDENTIALS', 'Invalid API key format'), 400);
+    }
+    
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptedKey = await encrypt(kite_api_key, encryptionKey);
+    const encryptedSecret = await encrypt(kite_api_secret, encryptionKey);
+    
+    if (update_type === 'account') {
+      // Update account-specific credentials
+      await c.env.DB.prepare(`
+        UPDATE accounts SET 
+          kite_api_key = ?,
+          kite_api_secret = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(encryptedKey, encryptedSecret, sessionData.account_id).run();
+      
+      return c.json(successResponse({
+        updated: true,
+        type: 'account',
+        message: 'Account credentials updated. Please re-login to Zerodha.'
+      }));
+    } else {
+      // Update app-level credentials
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('kite_api_key', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedKey, encryptedKey).run();
+      
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('kite_api_secret', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedSecret, encryptedSecret).run();
+      
+      return c.json(successResponse({
+        updated: true,
+        type: 'app',
+        message: 'App credentials updated. All accounts will use new credentials.'
+      }));
+    }
+  } catch (error) {
+    console.error('Update credentials error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to update credentials'), 500);
   }
 });
 
@@ -98,21 +251,50 @@ setup.post('/configure', async (c) => {
  */
 setup.post('/add-account', async (c) => {
   try {
-    const { name, kite_api_key, kite_api_secret } = await c.req.json<{
+    const { name, kite_api_key, kite_api_secret, use_app_credentials } = await c.req.json<{
       name: string;
-      kite_api_key: string;
-      kite_api_secret: string;
+      kite_api_key?: string;
+      kite_api_secret?: string;
+      use_app_credentials?: boolean;
     }>();
     
-    if (!name || !kite_api_key || !kite_api_secret) {
-      return c.json(errorResponse('INVALID_INPUT', 'Name, API key and secret are required'), 400);
+    if (!name) {
+      return c.json(errorResponse('INVALID_INPUT', 'Account name is required'), 400);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    let encryptedKey: string | null = null;
+    let encryptedSecret: string | null = null;
+    let loginApiKey: string;
+    let loginApiSecret: string;
     
-    // Encrypt credentials
-    const encryptedKey = await encrypt(kite_api_key, encryptionKey);
-    const encryptedSecret = await encrypt(kite_api_secret, encryptionKey);
+    if (use_app_credentials || (!kite_api_key && !kite_api_secret)) {
+      // Use app-level credentials
+      const apiKeyConfig = await c.env.DB.prepare(
+        "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+      ).first<{ config_value: string }>();
+      
+      const apiSecretConfig = await c.env.DB.prepare(
+        "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+      ).first<{ config_value: string }>();
+      
+      if (!apiKeyConfig?.config_value || !apiSecretConfig?.config_value) {
+        return c.json(errorResponse('NO_CREDENTIALS', 'Please configure API credentials first'), 400);
+      }
+      
+      loginApiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+      loginApiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+    } else {
+      // Use account-specific credentials
+      if (!kite_api_key || !kite_api_secret) {
+        return c.json(errorResponse('INVALID_INPUT', 'API key and secret are required'), 400);
+      }
+      
+      encryptedKey = await encrypt(kite_api_key, encryptionKey);
+      encryptedSecret = await encrypt(kite_api_secret, encryptionKey);
+      loginApiKey = kite_api_key;
+      loginApiSecret = kite_api_secret;
+    }
     
     // Check if this is the first non-system account
     const existingCount = await c.env.DB.prepare(
@@ -131,8 +313,8 @@ setup.post('/add-account', async (c) => {
     
     const accountId = result.meta.last_row_id;
     
-    // Generate login URL for this account
-    const kite = new KiteClient(kite_api_key, kite_api_secret);
+    // Generate login URL
+    const kite = new KiteClient(loginApiKey, loginApiSecret);
     const loginUrl = kite.getLoginUrl();
     
     return c.json(successResponse({
@@ -201,7 +383,7 @@ setup.put('/update-account/:id', async (c) => {
       return c.json(errorResponse('NOT_FOUND', 'Account not found'), 404);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
     const updateFields: string[] = [];
     const updateValues: any[] = [];
     
@@ -253,7 +435,7 @@ setup.post('/create-family-group', async (c) => {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
   
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as any;
+  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
   if (!sessionData) {
     return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
   }
@@ -316,7 +498,7 @@ setup.get('/family-groups', async (c) => {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
   
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as any;
+  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
   if (!sessionData) {
     return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
   }

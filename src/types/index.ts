@@ -228,6 +228,27 @@ export interface InstrumentCache {
   updated_at: string;
 }
 
+export interface MasterInstrument {
+  id: number;
+  instrument_token: number;
+  exchange_token: number | null;
+  trading_symbol: string;
+  name: string | null;
+  exchange: string;
+  segment: string | null;
+  instrument_type: string | null;
+  tick_size: number | null;
+  lot_size: number;
+  expiry: string | null;
+  strike: number | null;
+  last_price: number | null;
+  sector: string | null;
+  industry: string | null;
+  market_cap: 'large' | 'mid' | 'small' | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ============================================
 // Kite API Types
 // ============================================
@@ -293,7 +314,7 @@ export interface KiteHolding {
 }
 
 export interface KiteOrder {
-  variety: 'regular' | 'amo' | 'co';
+  variety?: 'regular' | 'amo' | 'co';
   tradingsymbol: string;
   exchange: string;
   transaction_type: 'BUY' | 'SELL';
@@ -305,6 +326,11 @@ export interface KiteOrder {
   validity?: 'DAY' | 'IOC';
   readonly?: boolean;
   tag?: string;
+  disclosed_quantity?: number;
+}
+
+export interface KiteOrderResponse {
+  order_id: string;
 }
 
 // ============================================

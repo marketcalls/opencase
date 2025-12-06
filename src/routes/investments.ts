@@ -1,6 +1,6 @@
 /**
  * Investment Routes
- * Buy, sell, rebalance basket investments
+ * Buy, sell, rebalance basket investments with direct API order placement
  */
 
 import { Hono } from 'hono';
@@ -54,18 +54,31 @@ async function getKiteClient(
   
   if (!account?.access_token) return null;
   
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
-  let apiKey = c.env.KITE_API_KEY;
-  let apiSecret = c.env.KITE_API_SECRET || '';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
   
+  // Try account-specific credentials first
   if (account.kite_api_key && account.kite_api_secret) {
-    apiKey = await decrypt(account.kite_api_key, encryptionKey);
-    apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+    const apiKey = await decrypt(account.kite_api_key, encryptionKey);
+    const apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+    return new KiteClient(apiKey, apiSecret, account.access_token);
   }
   
-  if (!apiKey) return null;
+  // Fall back to app config
+  const apiKeyConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+  ).first<{ config_value: string }>();
   
-  return new KiteClient(apiKey, apiSecret, account.access_token);
+  const apiSecretConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+  ).first<{ config_value: string }>();
+  
+  if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+    const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+    const apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+    return new KiteClient(apiKey, apiSecret, account.access_token);
+  }
+  
+  return null;
 }
 
 /**
@@ -170,14 +183,14 @@ investments.get('/:id', async (c) => {
 
 /**
  * POST /api/investments/buy/:basketId
- * Buy a basket - generates order for Kite
+ * Buy a basket - directly places orders via Kite API
  */
 investments.post('/buy/:basketId', async (c) => {
   const basketId = parseInt(c.req.param('basketId'));
   const session = c.get('session') as SessionData;
   
   try {
-    const { investment_amount } = await c.req.json<BuyBasketRequest>();
+    const { investment_amount, use_direct_api = true } = await c.req.json<BuyBasketRequest & { use_direct_api?: boolean }>();
     
     if (!investment_amount || investment_amount <= 0) {
       return c.json(errorResponse('INVALID_INPUT', 'Valid investment amount required'), 400);
@@ -231,31 +244,129 @@ investments.post('/buy/:basketId', async (c) => {
     
     const transactionId = txResult.meta.last_row_id;
     
-    // Generate Kite basket order data
-    const basketOrderData = kite.generateBasketOrderData(orders);
-    
-    return c.json(successResponse({
-      transaction_id: transactionId,
-      orders: orders.map(o => ({
-        trading_symbol: o.tradingsymbol,
-        exchange: o.exchange,
-        quantity: o.quantity,
-        estimated_amount: o.quantity * (quotes[`${o.exchange}:${o.tradingsymbol}`]?.last_price || 0)
-      })),
-      total_amount: totalAmount,
-      unused_amount: unusedAmount,
-      kite_basket_url: basketOrderData.url,
-      kite_basket_data: basketOrderData.formData
-    }));
+    if (use_direct_api) {
+      // Place orders directly via Kite API
+      try {
+        const orderResults = await kite.placeMultipleOrders(orders);
+        
+        const successfulOrders = orderResults.filter(r => r.result !== null);
+        const failedOrders = orderResults.filter(r => r.error !== null);
+        
+        const orderIds = successfulOrders.map(r => r.result!.order_id);
+        
+        // Update transaction with order IDs
+        await c.env.DB.prepare(`
+          UPDATE transactions SET 
+            kite_order_ids = ?,
+            status = ?,
+            error_message = ?
+          WHERE id = ?
+        `).bind(
+          JSON.stringify(orderIds),
+          failedOrders.length > 0 ? (successfulOrders.length > 0 ? 'PARTIAL' : 'FAILED') : 'PROCESSING',
+          failedOrders.length > 0 ? JSON.stringify(failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error }))) : null,
+          transactionId
+        ).run();
+        
+        if (successfulOrders.length > 0) {
+          // Create investment record
+          const actualAmount = successfulOrders.reduce((sum, o) => {
+            const key = `${o.order.exchange}:${o.order.tradingsymbol}`;
+            return sum + (o.order.quantity * (quotes[key]?.last_price || 0));
+          }, 0);
+          
+          const invResult = await c.env.DB.prepare(`
+            INSERT INTO investments (account_id, basket_id, invested_amount, current_value, status)
+            VALUES (?, ?, ?, ?, 'ACTIVE')
+          `).bind(session.account_id, basketId, actualAmount, actualAmount).run();
+          
+          const investmentId = invResult.meta.last_row_id;
+          
+          // Get basket stocks for target weights
+          const stockWeightMap: Record<string, number> = {};
+          stocks.results.forEach(s => {
+            stockWeightMap[`${s.exchange}:${s.trading_symbol}`] = s.weight_percentage;
+          });
+          
+          // Create holdings for successful orders
+          for (const orderResult of successfulOrders) {
+            const key = `${orderResult.order.exchange}:${orderResult.order.tradingsymbol}`;
+            const price = quotes[key]?.last_price || 0;
+            
+            await c.env.DB.prepare(`
+              INSERT INTO investment_holdings (investment_id, trading_symbol, exchange, quantity, average_price, current_price, target_weight)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              investmentId,
+              orderResult.order.tradingsymbol,
+              orderResult.order.exchange,
+              orderResult.order.quantity,
+              price,
+              price,
+              stockWeightMap[key] || 0
+            ).run();
+          }
+          
+          // Update transaction
+          await c.env.DB.prepare(`
+            UPDATE transactions SET 
+              investment_id = ?,
+              status = 'COMPLETED',
+              completed_at = datetime('now')
+            WHERE id = ?
+          `).bind(investmentId, transactionId).run();
+          
+          return c.json(successResponse({
+            transaction_id: transactionId,
+            investment_id: investmentId,
+            order_ids: orderIds,
+            orders_placed: successfulOrders.length,
+            orders_failed: failedOrders.length,
+            total_amount: actualAmount,
+            unused_amount: investment_amount - actualAmount,
+            failed_orders: failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error })),
+            message: failedOrders.length > 0 
+              ? `Partially completed: ${successfulOrders.length} orders placed, ${failedOrders.length} failed`
+              : `Successfully placed ${successfulOrders.length} orders`
+          }));
+        } else {
+          return c.json(errorResponse('ORDER_FAILED', 'All orders failed: ' + failedOrders.map(f => f.error).join(', ')), 500);
+        }
+      } catch (orderError) {
+        // Update transaction as failed
+        await c.env.DB.prepare(`
+          UPDATE transactions SET status = 'FAILED', error_message = ? WHERE id = ?
+        `).bind((orderError as Error).message, transactionId).run();
+        
+        return c.json(errorResponse('ORDER_ERROR', (orderError as Error).message), 500);
+      }
+    } else {
+      // Return Kite basket order data for external execution (legacy)
+      const basketOrderData = kite.generateBasketOrderData(orders);
+      
+      return c.json(successResponse({
+        transaction_id: transactionId,
+        orders: orders.map(o => ({
+          trading_symbol: o.tradingsymbol,
+          exchange: o.exchange,
+          quantity: o.quantity,
+          estimated_amount: o.quantity * (quotes[`${o.exchange}:${o.tradingsymbol}`]?.last_price || 0)
+        })),
+        total_amount: totalAmount,
+        unused_amount: unusedAmount,
+        kite_basket_url: basketOrderData.url,
+        kite_basket_data: basketOrderData.formData
+      }));
+    }
   } catch (error) {
     console.error('Buy basket error:', error);
-    return c.json(errorResponse('ERROR', 'Failed to generate buy order'), 500);
+    return c.json(errorResponse('ERROR', 'Failed to process buy order'), 500);
   }
 });
 
 /**
  * POST /api/investments/:id/confirm-buy
- * Confirm basket purchase after Kite execution
+ * Confirm basket purchase after Kite execution (legacy)
  */
 investments.post('/:id/confirm-buy', async (c) => {
   const transactionId = parseInt(c.req.param('id'));
@@ -346,14 +457,14 @@ investments.post('/:id/confirm-buy', async (c) => {
 
 /**
  * POST /api/investments/:id/sell
- * Sell investment holdings
+ * Sell investment holdings directly via API
  */
 investments.post('/:id/sell', async (c) => {
   const investmentId = parseInt(c.req.param('id'));
   const session = c.get('session') as SessionData;
   
   try {
-    const { percentage = 100 } = await c.req.json<SellBasketRequest>();
+    const { percentage = 100, use_direct_api = true } = await c.req.json<SellBasketRequest & { use_direct_api?: boolean }>();
     
     const investment = await c.env.DB.prepare(`
       SELECT * FROM investments WHERE id = ? AND account_id = ? AND status = 'ACTIVE'
@@ -416,20 +527,100 @@ investments.post('/:id/sell', async (c) => {
     `).bind(session.account_id, investmentId, investment.basket_id, totalSellValue, JSON.stringify(orders)).run();
     
     const transactionId = txResult.meta.last_row_id;
-    const basketOrderData = kite.generateBasketOrderData(orders);
     
-    return c.json(successResponse({
-      transaction_id: transactionId,
-      orders: orders.map(o => ({
-        trading_symbol: o.tradingsymbol,
-        exchange: o.exchange,
-        quantity: o.quantity,
-        estimated_amount: o.quantity * (quotes[`${o.exchange}:${o.tradingsymbol}`]?.last_price || 0)
-      })),
-      total_sell_value: totalSellValue,
-      kite_basket_url: basketOrderData.url,
-      kite_basket_data: basketOrderData.formData
-    }));
+    if (use_direct_api) {
+      // Place sell orders directly
+      try {
+        const orderResults = await kite.placeMultipleOrders(orders);
+        const successfulOrders = orderResults.filter(r => r.result !== null);
+        const failedOrders = orderResults.filter(r => r.error !== null);
+        const orderIds = successfulOrders.map(r => r.result!.order_id);
+        
+        // Update transaction
+        await c.env.DB.prepare(`
+          UPDATE transactions SET 
+            kite_order_ids = ?,
+            status = ?,
+            error_message = ?,
+            completed_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          JSON.stringify(orderIds),
+          failedOrders.length > 0 ? (successfulOrders.length > 0 ? 'PARTIAL' : 'FAILED') : 'COMPLETED',
+          failedOrders.length > 0 ? JSON.stringify(failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error }))) : null,
+          transactionId
+        ).run();
+        
+        // Update holdings for successful sell orders
+        for (const orderResult of successfulOrders) {
+          const holding = holdings.results.find(h => 
+            h.trading_symbol === orderResult.order.tradingsymbol && 
+            h.exchange === orderResult.order.exchange
+          );
+          
+          if (holding) {
+            const newQty = holding.quantity - orderResult.order.quantity;
+            
+            if (newQty <= 0) {
+              await c.env.DB.prepare(
+                'DELETE FROM investment_holdings WHERE id = ?'
+              ).bind(holding.id).run();
+            } else {
+              await c.env.DB.prepare(`
+                UPDATE investment_holdings SET quantity = ?, last_updated = datetime('now') WHERE id = ?
+              `).bind(newQty, holding.id).run();
+            }
+          }
+        }
+        
+        // Check if all holdings sold
+        const remainingHoldings = await c.env.DB.prepare(
+          'SELECT COUNT(*) as count FROM investment_holdings WHERE investment_id = ?'
+        ).bind(investmentId).first<{ count: number }>();
+        
+        if ((remainingHoldings?.count || 0) === 0) {
+          await c.env.DB.prepare(`
+            UPDATE investments SET status = 'SOLD' WHERE id = ?
+          `).bind(investmentId).run();
+        } else if (percentage < 100) {
+          await c.env.DB.prepare(`
+            UPDATE investments SET status = 'PARTIAL' WHERE id = ?
+          `).bind(investmentId).run();
+        }
+        
+        return c.json(successResponse({
+          transaction_id: transactionId,
+          order_ids: orderIds,
+          orders_placed: successfulOrders.length,
+          orders_failed: failedOrders.length,
+          total_sell_value: totalSellValue,
+          failed_orders: failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error })),
+          message: `Successfully placed ${successfulOrders.length} sell orders`
+        }));
+      } catch (orderError) {
+        await c.env.DB.prepare(`
+          UPDATE transactions SET status = 'FAILED', error_message = ? WHERE id = ?
+        `).bind((orderError as Error).message, transactionId).run();
+        
+        return c.json(errorResponse('ORDER_ERROR', (orderError as Error).message), 500);
+      }
+    } else {
+      // Legacy: return basket order data
+      const basketOrderData = kite.generateBasketOrderData(orders);
+      
+      return c.json(successResponse({
+        transaction_id: transactionId,
+        orders: orders.map(o => ({
+          trading_symbol: o.tradingsymbol,
+          exchange: o.exchange,
+          quantity: o.quantity,
+          estimated_amount: o.quantity * (quotes[`${o.exchange}:${o.tradingsymbol}`]?.last_price || 0)
+        })),
+        total_sell_value: totalSellValue,
+        kite_basket_url: basketOrderData.url,
+        kite_basket_data: basketOrderData.formData
+      }));
+    }
   } catch (error) {
     console.error('Sell investment error:', error);
     return c.json(errorResponse('ERROR', 'Failed to generate sell order'), 500);
@@ -563,23 +754,15 @@ investments.get('/:id/rebalance-preview', async (c) => {
 
 /**
  * POST /api/investments/:id/rebalance
- * Execute rebalancing orders
+ * Execute rebalancing orders directly via API
  */
 investments.post('/:id/rebalance', async (c) => {
   const investmentId = parseInt(c.req.param('id'));
   const session = c.get('session') as SessionData;
   
   try {
-    const { threshold = 5 } = await c.req.json<{ threshold?: number }>();
+    const { threshold = 5, use_direct_api = true } = await c.req.json<{ threshold?: number; use_direct_api?: boolean }>();
     
-    // Get rebalance preview first
-    const previewResponse = await fetch(`${c.req.url.split('/rebalance')[0]}/rebalance-preview?threshold=${threshold}`, {
-      headers: {
-        'X-Session-ID': c.req.header('X-Session-ID') || ''
-      }
-    });
-    
-    // For now, directly calculate like preview
     const investment = await c.env.DB.prepare(`
       SELECT * FROM investments WHERE id = ? AND account_id = ? AND status = 'ACTIVE'
     `).bind(investmentId, session.account_id).first<Investment>();
@@ -593,7 +776,7 @@ investments.post('/:id/rebalance', async (c) => {
       return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login'), 401);
     }
     
-    // Get holdings and calculate orders (similar to preview)
+    // Get holdings and calculate orders
     const holdings = await c.env.DB.prepare(
       'SELECT * FROM investment_holdings WHERE investment_id = ?'
     ).bind(investmentId).all<InvestmentHolding>();
@@ -642,26 +825,109 @@ investments.post('/:id/rebalance', async (c) => {
     `).bind(session.account_id, investmentId, investment.basket_id, buyAmount + sellAmount, JSON.stringify(orders)).run();
     
     const transactionId = txResult.meta.last_row_id;
-    const basketOrderData = kite.generateBasketOrderData(orders);
     
-    // Update last rebalanced
-    await c.env.DB.prepare(
-      'UPDATE investments SET last_rebalanced_at = datetime("now") WHERE id = ?'
-    ).bind(investmentId).run();
-    
-    return c.json(successResponse({
-      transaction_id: transactionId,
-      orders: orders.map(o => ({
-        trading_symbol: o.tradingsymbol,
-        exchange: o.exchange,
-        transaction_type: o.transaction_type,
-        quantity: o.quantity
-      })),
-      buy_amount: buyAmount,
-      sell_amount: sellAmount,
-      kite_basket_url: basketOrderData.url,
-      kite_basket_data: basketOrderData.formData
-    }));
+    if (use_direct_api) {
+      // Place rebalance orders directly
+      try {
+        const orderResults = await kite.placeMultipleOrders(orders);
+        const successfulOrders = orderResults.filter(r => r.result !== null);
+        const failedOrders = orderResults.filter(r => r.error !== null);
+        const orderIds = successfulOrders.map(r => r.result!.order_id);
+        
+        // Update transaction
+        await c.env.DB.prepare(`
+          UPDATE transactions SET 
+            kite_order_ids = ?,
+            status = ?,
+            error_message = ?,
+            completed_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          JSON.stringify(orderIds),
+          failedOrders.length > 0 ? (successfulOrders.length > 0 ? 'PARTIAL' : 'FAILED') : 'COMPLETED',
+          failedOrders.length > 0 ? JSON.stringify(failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error }))) : null,
+          transactionId
+        ).run();
+        
+        // Update holdings for successful orders
+        for (const orderResult of successfulOrders) {
+          const holding = holdings.results.find(h => 
+            h.trading_symbol === orderResult.order.tradingsymbol && 
+            h.exchange === orderResult.order.exchange
+          );
+          
+          if (holding) {
+            const key = `${orderResult.order.exchange}:${orderResult.order.tradingsymbol}`;
+            const price = quotes[key]?.last_price || holding.average_price;
+            
+            if (orderResult.order.transaction_type === 'BUY') {
+              const newQty = holding.quantity + orderResult.order.quantity;
+              const newAvgPrice = ((holding.quantity * holding.average_price) + (orderResult.order.quantity * price)) / newQty;
+              
+              await c.env.DB.prepare(`
+                UPDATE investment_holdings SET quantity = ?, average_price = ?, last_updated = datetime('now') WHERE id = ?
+              `).bind(newQty, newAvgPrice, holding.id).run();
+            } else {
+              const newQty = holding.quantity - orderResult.order.quantity;
+              
+              if (newQty <= 0) {
+                await c.env.DB.prepare(
+                  'DELETE FROM investment_holdings WHERE id = ?'
+                ).bind(holding.id).run();
+              } else {
+                await c.env.DB.prepare(`
+                  UPDATE investment_holdings SET quantity = ?, last_updated = datetime('now') WHERE id = ?
+                `).bind(newQty, holding.id).run();
+              }
+            }
+          }
+        }
+        
+        // Update last rebalanced
+        await c.env.DB.prepare(
+          'UPDATE investments SET last_rebalanced_at = datetime("now") WHERE id = ?'
+        ).bind(investmentId).run();
+        
+        return c.json(successResponse({
+          transaction_id: transactionId,
+          order_ids: orderIds,
+          orders_placed: successfulOrders.length,
+          orders_failed: failedOrders.length,
+          buy_amount: buyAmount,
+          sell_amount: sellAmount,
+          failed_orders: failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error })),
+          message: `Rebalanced with ${successfulOrders.length} orders`
+        }));
+      } catch (orderError) {
+        await c.env.DB.prepare(`
+          UPDATE transactions SET status = 'FAILED', error_message = ? WHERE id = ?
+        `).bind((orderError as Error).message, transactionId).run();
+        
+        return c.json(errorResponse('ORDER_ERROR', (orderError as Error).message), 500);
+      }
+    } else {
+      // Legacy: return basket order data
+      const basketOrderData = kite.generateBasketOrderData(orders);
+      
+      // Update last rebalanced
+      await c.env.DB.prepare(
+        'UPDATE investments SET last_rebalanced_at = datetime("now") WHERE id = ?'
+      ).bind(investmentId).run();
+      
+      return c.json(successResponse({
+        transaction_id: transactionId,
+        orders: orders.map(o => ({
+          trading_symbol: o.tradingsymbol,
+          exchange: o.exchange,
+          transaction_type: o.transaction_type,
+          quantity: o.quantity
+        })),
+        buy_amount: buyAmount,
+        sell_amount: sellAmount,
+        kite_basket_url: basketOrderData.url,
+        kite_basket_data: basketOrderData.formData
+      }));
+    }
   } catch (error) {
     console.error('Rebalance error:', error);
     return c.json(errorResponse('ERROR', 'Failed to generate rebalance orders'), 500);

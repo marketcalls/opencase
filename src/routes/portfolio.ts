@@ -47,18 +47,31 @@ async function getKiteClient(c: any, accountId: number): Promise<KiteClient | nu
   
   if (!account?.access_token) return null;
   
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
-  let apiKey = c.env.KITE_API_KEY;
-  let apiSecret = c.env.KITE_API_SECRET || '';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
   
+  // Try account-specific credentials first
   if (account.kite_api_key && account.kite_api_secret) {
-    apiKey = await decrypt(account.kite_api_key, encryptionKey);
-    apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+    const apiKey = await decrypt(account.kite_api_key, encryptionKey);
+    const apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+    return new KiteClient(apiKey, apiSecret, account.access_token);
   }
   
-  if (!apiKey) return null;
+  // Fall back to app config
+  const apiKeyConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+  ).first<{ config_value: string }>();
   
-  return new KiteClient(apiKey, apiSecret, account.access_token);
+  const apiSecretConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+  ).first<{ config_value: string }>();
+  
+  if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+    const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+    const apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+    return new KiteClient(apiKey, apiSecret, account.access_token);
+  }
+  
+  return null;
 }
 
 /**
@@ -418,6 +431,126 @@ portfolio.post('/sync', async (c) => {
   } catch (error) {
     console.error('Sync error:', error);
     return c.json(errorResponse('ERROR', 'Failed to sync portfolio'), 500);
+  }
+});
+
+/**
+ * GET /api/portfolio/zerodha-holdings
+ * Get holdings directly from Zerodha account
+ */
+portfolio.get('/zerodha-holdings', async (c) => {
+  const session = c.get('session') as SessionData;
+  
+  try {
+    const kite = await getKiteClient(c, session.account_id);
+    
+    if (!kite) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
+    }
+    
+    // Get holdings from Zerodha
+    const holdings = await kite.getHoldings();
+    
+    // Calculate totals
+    let totalInvested = 0;
+    let totalCurrent = 0;
+    
+    const holdingsWithPnL = holdings.map(h => {
+      const invested = h.quantity * h.average_price;
+      const current = h.quantity * h.last_price;
+      totalInvested += invested;
+      totalCurrent += current;
+      
+      return {
+        ...h,
+        invested_value: invested,
+        current_value: current,
+        pnl_percentage: h.average_price > 0 ? ((h.last_price - h.average_price) / h.average_price) * 100 : 0
+      };
+    });
+    
+    return c.json(successResponse({
+      holdings: holdingsWithPnL,
+      summary: {
+        total_invested: totalInvested,
+        total_current: totalCurrent,
+        total_pnl: totalCurrent - totalInvested,
+        total_pnl_percentage: totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0,
+        holdings_count: holdings.length
+      }
+    }));
+  } catch (error) {
+    console.error('Zerodha holdings error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch Zerodha holdings'), 500);
+  }
+});
+
+/**
+ * GET /api/portfolio/positions
+ * Get current day positions from Zerodha
+ */
+portfolio.get('/positions', async (c) => {
+  const session = c.get('session') as SessionData;
+  
+  try {
+    const kite = await getKiteClient(c, session.account_id);
+    
+    if (!kite) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
+    }
+    
+    const positions = await kite.getPositions();
+    
+    return c.json(successResponse(positions));
+  } catch (error) {
+    console.error('Positions error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch positions'), 500);
+  }
+});
+
+/**
+ * GET /api/portfolio/orders
+ * Get today's orders from Zerodha
+ */
+portfolio.get('/orders', async (c) => {
+  const session = c.get('session') as SessionData;
+  
+  try {
+    const kite = await getKiteClient(c, session.account_id);
+    
+    if (!kite) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
+    }
+    
+    const orders = await kite.getOrders();
+    
+    return c.json(successResponse(orders));
+  } catch (error) {
+    console.error('Orders error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch orders'), 500);
+  }
+});
+
+/**
+ * GET /api/portfolio/margins
+ * Get account margins from Zerodha
+ */
+portfolio.get('/margins', async (c) => {
+  const session = c.get('session') as SessionData;
+  
+  try {
+    const kite = await getKiteClient(c, session.account_id);
+    
+    if (!kite) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
+    }
+    
+    const margins = await kite.getMargins();
+    
+    return c.json(successResponse(margins));
+  } catch (error) {
+    console.error('Margins error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch margins'), 500);
   }
 });
 

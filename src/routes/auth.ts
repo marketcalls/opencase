@@ -72,7 +72,7 @@ auth.get('/login', async (c) => {
       ).bind(accountId).first<Account>();
       
       if (account?.kite_api_key && account?.kite_api_secret) {
-        const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+        const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
         apiKey = await decrypt(account.kite_api_key, encryptionKey);
         apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
       }
@@ -85,7 +85,7 @@ auth.get('/login', async (c) => {
       ).first<{ config_value: string }>();
       
       if (config?.config_value) {
-        const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+        const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
         apiKey = await decrypt(config.config_value, encryptionKey);
       }
     }
@@ -133,7 +133,7 @@ auth.get('/callback', async (c) => {
     // Get API credentials
     let apiKey: string | undefined;
     let apiSecret: string | undefined;
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
     
     // Try app-level credentials first
     const keyConfig = await c.env.DB.prepare(

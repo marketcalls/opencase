@@ -289,3 +289,70 @@ export function groupBy<T>(array: T[], key: keyof T): Record<string, T[]> {
     return groups;
   }, {} as Record<string, T[]>);
 }
+
+/**
+ * Calculate equal weights for stocks
+ */
+export function calculateEqualWeights<T extends { trading_symbol: string; exchange?: string }>(
+  stocks: T[]
+): Array<T & { weight_percentage: number }> {
+  if (stocks.length === 0) return [];
+  
+  const equalWeight = parseFloat((100 / stocks.length).toFixed(2));
+  const result = stocks.map((stock, index) => ({
+    ...stock,
+    exchange: stock.exchange || 'NSE',
+    weight_percentage: equalWeight
+  }));
+  
+  // Adjust the last stock to ensure total is exactly 100
+  const totalWeight = result.reduce((sum, s) => sum + s.weight_percentage, 0);
+  if (Math.abs(totalWeight - 100) > 0.001 && result.length > 0) {
+    const adjustment = 100 - totalWeight;
+    result[result.length - 1].weight_percentage = parseFloat(
+      (result[result.length - 1].weight_percentage + adjustment).toFixed(2)
+    );
+  }
+  
+  return result;
+}
+
+/**
+ * Recalculate weights after adjusting one stock
+ */
+export function recalculateWeightsAfterAdjustment(
+  stocks: Array<{ trading_symbol: string; exchange?: string; weight_percentage: number }>,
+  adjustedIndex: number,
+  newWeight: number
+): Array<{ trading_symbol: string; exchange: string; weight_percentage: number }> {
+  if (stocks.length === 0) return [];
+  if (newWeight > 100) newWeight = 100;
+  if (newWeight < 0) newWeight = 0;
+  
+  const remainingWeight = 100 - newWeight;
+  const remainingStocks = stocks.length - 1;
+  const equalRemainingWeight = remainingStocks > 0 
+    ? parseFloat((remainingWeight / remainingStocks).toFixed(2)) 
+    : 0;
+  
+  const result = stocks.map((stock, index) => ({
+    trading_symbol: stock.trading_symbol,
+    exchange: stock.exchange || 'NSE',
+    weight_percentage: index === adjustedIndex ? newWeight : equalRemainingWeight
+  }));
+  
+  // Adjust for rounding errors
+  const totalWeight = result.reduce((sum, s) => sum + s.weight_percentage, 0);
+  if (Math.abs(totalWeight - 100) > 0.01) {
+    const adjustment = 100 - totalWeight;
+    // Add adjustment to the first non-adjusted stock
+    const adjustIndex = result.findIndex((_, i) => i !== adjustedIndex);
+    if (adjustIndex !== -1) {
+      result[adjustIndex].weight_percentage = parseFloat(
+        (result[adjustIndex].weight_percentage + adjustment).toFixed(2)
+      );
+    }
+  }
+  
+  return result;
+}

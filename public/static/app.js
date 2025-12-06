@@ -1,6 +1,6 @@
 /**
  * StockBasket Frontend Application
- * Comprehensive dashboard for managing stock baskets
+ * Comprehensive dashboard for managing stock baskets with direct API order placement
  */
 
 // State management
@@ -12,10 +12,15 @@ const state = {
   investments: [],
   alerts: [],
   sips: [],
+  holdings: [],
+  zerodhaHoldings: [],
   currentView: 'dashboard',
   selectedBasket: null,
   selectedInvestment: null,
-  loading: true
+  basketStocks: [],
+  searchResults: [],
+  loading: true,
+  instrumentsStatus: null
 };
 
 // API Helper
@@ -54,13 +59,11 @@ const api = {
 
 // Initialize app
 async function initApp() {
-  // Get session from URL or localStorage
   const urlParams = new URLSearchParams(window.location.search);
   state.sessionId = urlParams.get('session_id') || localStorage.getItem('session_id');
   
   if (state.sessionId) {
     localStorage.setItem('session_id', state.sessionId);
-    // Clean URL
     if (urlParams.get('session_id')) {
       window.history.replaceState({}, document.title, '/dashboard');
     }
@@ -71,10 +74,16 @@ async function initApp() {
   
   if (authRes?.success && authRes.data.authenticated) {
     state.account = authRes.data.account;
+    
+    // Check instruments status
+    const instrStatus = await api.get('/instruments/status');
+    if (instrStatus?.success) {
+      state.instrumentsStatus = instrStatus.data;
+    }
+    
     await loadDashboardData();
     renderApp();
   } else {
-    // Redirect to home for login
     window.location.href = '/?error=please_login';
   }
 }
@@ -85,12 +94,13 @@ async function loadDashboardData() {
   renderLoading();
 
   try {
-    const [basketsRes, investmentsRes, alertsRes, sipRes, accountsRes] = await Promise.all([
+    const [basketsRes, investmentsRes, alertsRes, sipRes, accountsRes, holdingsRes] = await Promise.all([
       api.get('/baskets'),
       api.get('/investments'),
       api.get('/alerts'),
       api.get('/sip'),
-      api.get('/auth/accounts')
+      api.get('/auth/accounts'),
+      api.get('/portfolio/holdings')
     ]);
 
     state.baskets = basketsRes?.success ? basketsRes.data : [];
@@ -98,11 +108,56 @@ async function loadDashboardData() {
     state.alerts = alertsRes?.success ? alertsRes.data : [];
     state.sips = sipRes?.success ? sipRes.data : [];
     state.accounts = accountsRes?.success ? accountsRes.data : [];
+    state.holdings = holdingsRes?.success ? holdingsRes.data : [];
   } catch (error) {
     console.error('Failed to load data:', error);
   }
 
   state.loading = false;
+}
+
+// Utility functions
+function formatCurrency(amount) {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(amount || 0);
+}
+
+function formatNumber(num, decimals = 2) {
+  return parseFloat(num || 0).toFixed(decimals);
+}
+
+function getThemeClass(theme) {
+  const colors = {
+    'Technology': 'bg-blue-100 text-blue-800',
+    'Banking': 'bg-green-100 text-green-800',
+    'Healthcare': 'bg-red-100 text-red-800',
+    'Consumer': 'bg-purple-100 text-purple-800',
+    'Automobile': 'bg-orange-100 text-orange-800',
+    'Index': 'bg-indigo-100 text-indigo-800',
+    'Dividend': 'bg-yellow-100 text-yellow-800',
+    'Growth': 'bg-pink-100 text-pink-800'
+  };
+  return colors[theme] || 'bg-gray-100 text-gray-800';
+}
+
+function showNotification(message, type = 'info') {
+  const colors = {
+    success: 'bg-green-500',
+    error: 'bg-red-500',
+    warning: 'bg-yellow-500',
+    info: 'bg-blue-500'
+  };
+  
+  const notification = document.createElement('div');
+  notification.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-pulse`;
+  notification.textContent = message;
+  document.body.appendChild(notification);
+  
+  setTimeout(() => notification.remove(), 3000);
 }
 
 // Render functions
@@ -112,7 +167,7 @@ function renderApp() {
     ${renderNav()}
     <div class="flex">
       ${renderSidebar()}
-      <main class="flex-1 p-6">
+      <main class="flex-1 p-6 bg-gray-100 min-h-screen">
         ${renderMainContent()}
       </main>
     </div>
@@ -148,7 +203,16 @@ function renderNav() {
           </div>
           
           <div class="flex items-center space-x-4">
-            <!-- Account Switcher -->
+            ${state.instrumentsStatus?.needs_download ? `
+              <button onclick="downloadInstruments()" class="text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full hover:bg-yellow-200">
+                <i class="fas fa-download mr-1"></i> Download Instruments
+              </button>
+            ` : ''}
+            
+            <button onclick="showSettingsModal()" class="text-gray-500 hover:text-gray-700">
+              <i class="fas fa-cog"></i>
+            </button>
+            
             <div class="relative group">
               <button class="flex items-center space-x-2 px-3 py-2 rounded-lg hover:bg-gray-100">
                 <i class="fas fa-user-circle text-gray-500"></i>
@@ -189,10 +253,11 @@ function renderSidebar() {
     { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
     { id: 'baskets', icon: 'fa-boxes', label: 'My Baskets' },
     { id: 'investments', icon: 'fa-wallet', label: 'Investments' },
+    { id: 'holdings', icon: 'fa-hand-holding-usd', label: 'Holdings' },
     { id: 'explore', icon: 'fa-compass', label: 'Explore' },
     { id: 'sip', icon: 'fa-calendar-check', label: 'SIP' },
     { id: 'alerts', icon: 'fa-bell', label: 'Alerts' },
-    { id: 'performance', icon: 'fa-chart-line', label: 'Performance' }
+    { id: 'orders', icon: 'fa-receipt', label: 'Orders' }
   ];
 
   return `
@@ -207,9 +272,6 @@ function renderSidebar() {
             }">
             <i class="fas ${item.icon} w-5"></i>
             <span>${item.label}</span>
-            ${item.id === 'alerts' && state.alerts.filter(a => !a.is_read).length > 0 ? 
-              `<span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">${state.alerts.filter(a => !a.is_read).length}</span>` : ''
-            }
           </button>
         `).join('')}
       </nav>
@@ -222,12 +284,14 @@ function renderMainContent() {
     case 'dashboard': return renderDashboard();
     case 'baskets': return renderBaskets();
     case 'investments': return renderInvestments();
+    case 'holdings': return renderHoldings();
     case 'explore': return renderExplore();
     case 'sip': return renderSIP();
     case 'alerts': return renderAlerts();
-    case 'performance': return renderPerformance();
+    case 'orders': return renderOrders();
     case 'basket-detail': return renderBasketDetail();
     case 'investment-detail': return renderInvestmentDetail();
+    case 'create-basket': return renderCreateBasket();
     default: return renderDashboard();
   }
 }
@@ -242,7 +306,7 @@ function renderDashboard() {
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <button onclick="showCreateBasketModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center space-x-2">
+        <button onclick="setView('create-basket')" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center space-x-2">
           <i class="fas fa-plus"></i>
           <span>Create Basket</span>
         </button>
@@ -307,7 +371,6 @@ function renderDashboard() {
 
       <!-- My Baskets & Investments -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- My Baskets -->
         <div class="bg-white rounded-xl shadow-sm">
           <div class="p-6 border-b flex justify-between items-center">
             <h2 class="font-semibold text-gray-900">My Baskets</h2>
@@ -318,7 +381,7 @@ function renderDashboard() {
               <div class="text-center py-8 text-gray-500">
                 <i class="fas fa-boxes text-4xl mb-3 opacity-50"></i>
                 <p>No baskets yet</p>
-                <button onclick="showCreateBasketModal()" class="mt-3 text-indigo-600 hover:underline">Create your first basket</button>
+                <button onclick="setView('create-basket')" class="mt-3 text-indigo-600 hover:underline">Create your first basket</button>
               </div>
             ` : state.baskets.slice(0, 5).map(basket => `
               <div onclick="viewBasket(${basket.id})" class="p-4 rounded-lg bg-gray-50 hover:bg-gray-100 cursor-pointer transition">
@@ -334,7 +397,6 @@ function renderDashboard() {
           </div>
         </div>
 
-        <!-- Active Investments -->
         <div class="bg-white rounded-xl shadow-sm">
           <div class="p-6 border-b flex justify-between items-center">
             <h2 class="font-semibold text-gray-900">Active Investments</h2>
@@ -345,7 +407,7 @@ function renderDashboard() {
               <div class="text-center py-8 text-gray-500">
                 <i class="fas fa-wallet text-4xl mb-3 opacity-50"></i>
                 <p>No active investments</p>
-                <button onclick="setView('explore')" class="mt-3 text-indigo-600 hover:underline">Explore baskets to invest</button>
+                <button onclick="setView('explore')" class="mt-3 text-indigo-600 hover:underline">Explore baskets</button>
               </div>
             ` : state.investments.slice(0, 5).map(inv => {
               const pnl = (inv.current_value || inv.invested_amount) - inv.invested_amount;
@@ -372,31 +434,233 @@ function renderDashboard() {
           </div>
         </div>
       </div>
-
-      <!-- Alerts Preview -->
-      ${state.alerts.filter(a => a.is_active && !a.is_triggered).length > 0 ? `
-        <div class="bg-white rounded-xl shadow-sm p-6">
-          <h2 class="font-semibold text-gray-900 mb-4">Active Alerts</h2>
-          <div class="space-y-2">
-            ${state.alerts.filter(a => a.is_active).slice(0, 3).map(alert => `
-              <div class="flex items-center justify-between p-3 rounded-lg ${alert.is_triggered ? 'bg-yellow-50' : 'bg-gray-50'}">
-                <div class="flex items-center space-x-3">
-                  <i class="fas fa-bell ${alert.is_triggered ? 'text-yellow-500' : 'text-gray-400'}"></i>
-                  <div>
-                    <p class="text-sm font-medium">${alert.trading_symbol || 'Portfolio Alert'}</p>
-                    <p class="text-xs text-gray-500">${alert.condition} ${alert.threshold_value}</p>
-                  </div>
-                </div>
-                <span class="text-xs px-2 py-1 rounded-full ${alert.is_triggered ? 'bg-yellow-200 text-yellow-800' : 'bg-gray-200 text-gray-600'}">
-                  ${alert.is_triggered ? 'Triggered' : 'Active'}
-                </span>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      ` : ''}
     </div>
   `;
+}
+
+function renderHoldings() {
+  return `
+    <div class="space-y-6">
+      <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Holdings</h1>
+        <div class="flex space-x-2">
+          <button onclick="refreshZerodhaHoldings()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+            <i class="fas fa-sync-alt mr-2"></i>Sync with Zerodha
+          </button>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="bg-white rounded-xl shadow-sm">
+        <div class="border-b">
+          <nav class="flex -mb-px">
+            <button onclick="showHoldingsTab('portfolio')" id="tab-portfolio" class="tab-btn px-6 py-3 border-b-2 border-indigo-500 text-indigo-600 font-medium">
+              Portfolio Holdings
+            </button>
+            <button onclick="showHoldingsTab('zerodha')" id="tab-zerodha" class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              Zerodha Holdings
+            </button>
+          </nav>
+        </div>
+
+        <div id="holdings-content" class="p-6">
+          ${renderPortfolioHoldings()}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPortfolioHoldings() {
+  if (state.holdings.length === 0) {
+    return `
+      <div class="text-center py-16 text-gray-500">
+        <i class="fas fa-hand-holding-usd text-6xl mb-4 opacity-50"></i>
+        <h3 class="text-xl font-medium mb-2">No holdings yet</h3>
+        <p>Start investing in baskets to see your holdings here</p>
+      </div>
+    `;
+  }
+
+  const totalValue = state.holdings.reduce((sum, h) => sum + (h.current_value || 0), 0);
+  const totalInvested = state.holdings.reduce((sum, h) => sum + (h.invested_value || 0), 0);
+  const totalPnL = totalValue - totalInvested;
+
+  return `
+    <div class="space-y-6">
+      <div class="grid grid-cols-3 gap-4">
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Total Invested</p>
+          <p class="text-xl font-bold">${formatCurrency(totalInvested)}</p>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Current Value</p>
+          <p class="text-xl font-bold">${formatCurrency(totalValue)}</p>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Total P&L</p>
+          <p class="text-xl font-bold ${totalPnL >= 0 ? 'text-green-600' : 'text-red-600'}">
+            ${totalPnL >= 0 ? '+' : ''}${formatCurrency(totalPnL)}
+          </p>
+        </div>
+      </div>
+
+      <table class="w-full">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y">
+          ${state.holdings.map(h => `
+            <tr class="hover:bg-gray-50">
+              <td class="px-4 py-3">
+                <div>
+                  <p class="font-medium">${h.trading_symbol}</p>
+                  <p class="text-xs text-gray-500">${h.exchange}</p>
+                </div>
+              </td>
+              <td class="px-4 py-3 text-right">${h.total_quantity}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.avg_price)}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.current_price)}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.current_value)}</td>
+              <td class="px-4 py-3 text-right">
+                <span class="${h.pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+                  ${h.pnl >= 0 ? '+' : ''}${formatCurrency(h.pnl)}
+                  <br>
+                  <span class="text-xs">${h.pnl_percentage?.toFixed(2)}%</span>
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCreateBasket() {
+  return `
+    <div class="space-y-6">
+      <div class="flex items-center space-x-4">
+        <button onclick="setView('baskets')" class="text-gray-500 hover:text-gray-700">
+          <i class="fas fa-arrow-left"></i>
+        </button>
+        <h1 class="text-2xl font-bold text-gray-900">Create New Basket</h1>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <form id="createBasketForm" onsubmit="handleCreateBasket(event)">
+          <div class="grid grid-cols-2 gap-6 mb-6">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Basket Name *</label>
+              <input type="text" id="basketName" required 
+                class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" 
+                placeholder="My Tech Portfolio">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Theme</label>
+              <select id="basketTheme" class="w-full px-4 py-2 border rounded-lg">
+                <option value="">Select theme</option>
+                <option value="Technology">Technology</option>
+                <option value="Banking">Banking</option>
+                <option value="Healthcare">Healthcare</option>
+                <option value="Consumer">Consumer</option>
+                <option value="Automobile">Automobile</option>
+                <option value="Dividend">Dividend</option>
+                <option value="Growth">Growth</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mb-6">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Description</label>
+            <textarea id="basketDescription" rows="2" 
+              class="w-full px-4 py-2 border rounded-lg" 
+              placeholder="A diversified portfolio of tech stocks..."></textarea>
+          </div>
+
+          <div class="mb-6">
+            <div class="flex justify-between items-center mb-4">
+              <label class="block text-sm font-medium text-gray-700">Stocks (Max 20)</label>
+              <div class="flex space-x-2">
+                <button type="button" onclick="applyEqualWeights()" class="text-sm bg-indigo-100 text-indigo-600 px-3 py-1 rounded-full hover:bg-indigo-200">
+                  <i class="fas fa-balance-scale mr-1"></i>Equal Weights
+                </button>
+              </div>
+            </div>
+
+            <!-- Stock Search -->
+            <div class="mb-4">
+              <div class="relative">
+                <input type="text" id="stockSearch" 
+                  class="w-full px-4 py-2 border rounded-lg pl-10" 
+                  placeholder="Search stocks by symbol or name..."
+                  onkeyup="debounceSearch(this.value)"
+                  autocomplete="off">
+                <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+              </div>
+              <div id="searchResults" class="mt-2 bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto hidden"></div>
+            </div>
+
+            <!-- Selected Stocks -->
+            <div id="selectedStocks" class="space-y-2">
+              ${state.basketStocks.length === 0 ? `
+                <p class="text-center text-gray-500 py-4">No stocks added yet. Search and add stocks above.</p>
+              ` : renderSelectedStocks()}
+            </div>
+
+            <div class="mt-4 flex justify-between items-center text-sm">
+              <span class="text-gray-500">Total Weight: <span id="totalWeight" class="font-medium">0%</span></span>
+              <span class="text-gray-500"><span id="stockCount">0</span>/20 stocks</span>
+            </div>
+          </div>
+
+          <div class="flex justify-end space-x-4">
+            <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-50">
+              Cancel
+            </button>
+            <button type="submit" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+              <i class="fas fa-save mr-2"></i>Create Basket
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderSelectedStocks() {
+  return state.basketStocks.map((stock, index) => `
+    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+      <div class="flex items-center space-x-4">
+        <span class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-sm font-medium text-indigo-600">${index + 1}</span>
+        <div>
+          <p class="font-medium">${stock.trading_symbol}</p>
+          <p class="text-xs text-gray-500">${stock.name || ''} • ${stock.exchange}</p>
+        </div>
+        ${stock.last_price ? `<span class="text-sm text-gray-600">${formatCurrency(stock.last_price)}</span>` : ''}
+      </div>
+      <div class="flex items-center space-x-4">
+        <div class="flex items-center">
+          <input type="number" 
+            class="w-20 px-2 py-1 border rounded text-right stock-weight" 
+            value="${stock.weight_percentage}" 
+            min="0.01" max="100" step="0.01"
+            onchange="updateStockWeight(${index}, this.value)">
+          <span class="ml-1">%</span>
+        </div>
+        <button type="button" onclick="removeStock(${index})" class="text-red-500 hover:text-red-700">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+    </div>
+  `).join('');
 }
 
 function renderBaskets() {
@@ -404,9 +668,8 @@ function renderBaskets() {
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">My Baskets</h1>
-        <button onclick="showCreateBasketModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center space-x-2">
-          <i class="fas fa-plus"></i>
-          <span>Create Basket</span>
+        <button onclick="setView('create-basket')" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+          <i class="fas fa-plus mr-2"></i>Create Basket
         </button>
       </div>
 
@@ -416,7 +679,7 @@ function renderBaskets() {
           <h3 class="text-xl font-medium text-gray-600 mb-2">No baskets yet</h3>
           <p class="text-gray-500 mb-6">Create your first stock basket or explore templates</p>
           <div class="flex justify-center space-x-4">
-            <button onclick="showCreateBasketModal()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
+            <button onclick="setView('create-basket')" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
               <i class="fas fa-plus mr-2"></i>Create Basket
             </button>
             <button onclick="setView('explore')" class="border border-gray-300 px-6 py-2 rounded-lg hover:bg-gray-50">
@@ -431,13 +694,12 @@ function renderBaskets() {
               <div class="p-6">
                 <div class="flex justify-between items-start mb-4">
                   <span class="px-3 py-1 text-xs font-medium rounded-full ${getThemeClass(basket.theme)}">${basket.theme || 'Custom'}</span>
-                  ${basket.is_public ? '<i class="fas fa-globe text-gray-400" title="Public"></i>' : '<i class="fas fa-lock text-gray-400" title="Private"></i>'}
+                  ${basket.is_public ? '<i class="fas fa-globe text-gray-400"></i>' : '<i class="fas fa-lock text-gray-400"></i>'}
                 </div>
                 <h3 class="text-lg font-semibold text-gray-900 mb-2">${basket.name}</h3>
                 <p class="text-sm text-gray-500 line-clamp-2 mb-4">${basket.description || 'No description'}</p>
                 <div class="flex justify-between items-center text-sm">
                   <span class="text-gray-500">${basket.stock_count || 0} stocks</span>
-                  <span class="text-gray-500">Min: ${formatCurrency(basket.min_investment || 0)}</span>
                 </div>
               </div>
               <div class="px-6 py-4 bg-gray-50 flex justify-between items-center">
@@ -448,7 +710,7 @@ function renderBaskets() {
                   <button onclick="event.stopPropagation(); editBasket(${basket.id})" class="text-gray-400 hover:text-gray-600">
                     <i class="fas fa-edit"></i>
                   </button>
-                  <button onclick="event.stopPropagation(); confirmDeleteBasket(${basket.id})" class="text-gray-400 hover:text-red-600">
+                  <button onclick="event.stopPropagation(); deleteBasket(${basket.id})" class="text-gray-400 hover:text-red-600">
                     <i class="fas fa-trash"></i>
                   </button>
                 </div>
@@ -466,9 +728,6 @@ function renderInvestments() {
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">My Investments</h1>
-        <button onclick="setView('explore')" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
-          <i class="fas fa-plus mr-2"></i>New Investment
-        </button>
       </div>
 
       ${state.investments.length === 0 ? `
@@ -492,7 +751,7 @@ function renderInvestments() {
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100">
+            <tbody class="divide-y">
               ${state.investments.map(inv => {
                 const currentValue = inv.current_value || inv.invested_amount;
                 const pnl = currentValue - inv.invested_amount;
@@ -500,11 +759,9 @@ function renderInvestments() {
                 return `
                   <tr class="hover:bg-gray-50 cursor-pointer" onclick="viewInvestment(${inv.id})">
                     <td class="px-6 py-4">
-                      <div class="flex items-center">
-                        <div>
-                          <p class="font-medium text-gray-900">${inv.basket_name}</p>
-                          <p class="text-sm text-gray-500">${inv.basket_theme || 'Custom'}</p>
-                        </div>
+                      <div>
+                        <p class="font-medium text-gray-900">${inv.basket_name}</p>
+                        <p class="text-sm text-gray-500">${inv.basket_theme || ''}</p>
                       </div>
                     </td>
                     <td class="px-6 py-4 text-right">${formatCurrency(inv.invested_amount)}</td>
@@ -512,18 +769,17 @@ function renderInvestments() {
                     <td class="px-6 py-4 text-right">
                       <span class="${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
                         ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}
-                        <br><span class="text-xs">(${pnl >= 0 ? '+' : ''}${pnlPct}%)</span>
+                        <br>
+                        <span class="text-xs">${pnl >= 0 ? '+' : ''}${pnlPct}%</span>
                       </span>
                     </td>
                     <td class="px-6 py-4 text-right">
-                      <div class="flex justify-end space-x-2">
-                        <button onclick="event.stopPropagation(); rebalanceInvestment(${inv.id})" class="text-indigo-600 hover:text-indigo-800 p-2" title="Rebalance">
-                          <i class="fas fa-sync-alt"></i>
-                        </button>
-                        <button onclick="event.stopPropagation(); sellInvestment(${inv.id})" class="text-red-600 hover:text-red-800 p-2" title="Sell">
-                          <i class="fas fa-sign-out-alt"></i>
-                        </button>
-                      </div>
+                      <button onclick="event.stopPropagation(); sellInvestment(${inv.id})" class="text-red-600 hover:text-red-800 text-sm mr-2">
+                        Sell
+                      </button>
+                      <button onclick="event.stopPropagation(); rebalanceInvestment(${inv.id})" class="text-indigo-600 hover:text-indigo-800 text-sm">
+                        Rebalance
+                      </button>
                     </td>
                   </tr>
                 `;
@@ -539,28 +795,12 @@ function renderInvestments() {
 function renderExplore() {
   return `
     <div class="space-y-6">
-      <div class="flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-gray-900">Explore Baskets</h1>
-      </div>
-
-      <!-- Templates Section -->
-      <div>
-        <h2 class="text-lg font-semibold text-gray-800 mb-4">Pre-built Templates</h2>
-        <div id="templatesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-        </div>
-      </div>
-
-      <!-- Public Baskets Section -->
-      <div>
-        <h2 class="text-lg font-semibold text-gray-800 mb-4">Community Baskets</h2>
-        <div id="publicBasketsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-          <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
-        </div>
+      <h1 class="text-2xl font-bold text-gray-900">Explore Templates</h1>
+      <div id="templatesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
+        <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
+        <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
+        <div class="animate-pulse bg-white rounded-xl p-6 h-48"></div>
       </div>
     </div>
   `;
@@ -579,55 +819,52 @@ function renderSIP() {
       ${state.sips.length === 0 ? `
         <div class="text-center py-16 bg-white rounded-xl">
           <i class="fas fa-calendar-check text-6xl text-gray-300 mb-4"></i>
-          <h3 class="text-xl font-medium text-gray-600 mb-2">No SIPs active</h3>
+          <h3 class="text-xl font-medium text-gray-600 mb-2">No SIPs yet</h3>
           <p class="text-gray-500 mb-6">Set up systematic investment plans for your baskets</p>
           <button onclick="showCreateSIPModal()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
             <i class="fas fa-plus mr-2"></i>Create SIP
           </button>
         </div>
       ` : `
-        <div class="grid gap-6">
-          ${state.sips.map(sip => `
-            <div class="bg-white rounded-xl shadow-sm p-6">
-              <div class="flex justify-between items-start">
-                <div>
-                  <h3 class="text-lg font-semibold">${sip.basket_name || 'Basket #' + sip.basket_id}</h3>
-                  <p class="text-gray-500 text-sm capitalize">${sip.frequency} SIP</p>
-                </div>
-                <span class="px-3 py-1 rounded-full text-sm ${sip.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
-                  ${sip.status}
-                </span>
-              </div>
-              <div class="mt-4 grid grid-cols-3 gap-4">
-                <div>
-                  <p class="text-sm text-gray-500">Amount</p>
-                  <p class="font-semibold">${formatCurrency(sip.amount)}</p>
-                </div>
-                <div>
-                  <p class="text-sm text-gray-500">Next Date</p>
-                  <p class="font-semibold">${sip.next_execution_date || 'N/A'}</p>
-                </div>
-                <div>
-                  <p class="text-sm text-gray-500">Total Invested</p>
-                  <p class="font-semibold">${formatCurrency(sip.total_invested)}</p>
-                </div>
-              </div>
-              <div class="mt-4 flex space-x-3">
-                ${sip.status === 'ACTIVE' ? `
-                  <button onclick="pauseSIP(${sip.id})" class="text-yellow-600 hover:text-yellow-800">
-                    <i class="fas fa-pause mr-1"></i>Pause
-                  </button>
-                ` : sip.status === 'PAUSED' ? `
-                  <button onclick="resumeSIP(${sip.id})" class="text-green-600 hover:text-green-800">
-                    <i class="fas fa-play mr-1"></i>Resume
-                  </button>
-                ` : ''}
-                <button onclick="cancelSIP(${sip.id})" class="text-red-600 hover:text-red-800">
-                  <i class="fas fa-times mr-1"></i>Cancel
-                </button>
-              </div>
-            </div>
-          `).join('')}
+        <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+          <table class="w-full">
+            <thead class="bg-gray-50">
+              <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Basket</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Frequency</th>
+                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Next Execution</th>
+                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y">
+              ${state.sips.map(sip => `
+                <tr class="hover:bg-gray-50">
+                  <td class="px-6 py-4 font-medium">${sip.basket_name}</td>
+                  <td class="px-6 py-4 text-right">${formatCurrency(sip.amount)}</td>
+                  <td class="px-6 py-4 text-center capitalize">${sip.frequency}</td>
+                  <td class="px-6 py-4 text-center">${sip.next_execution_date || '-'}</td>
+                  <td class="px-6 py-4 text-center">
+                    <span class="px-2 py-1 text-xs rounded-full ${
+                      sip.status === 'ACTIVE' ? 'bg-green-100 text-green-800' :
+                      sip.status === 'PAUSED' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-gray-100 text-gray-800'
+                    }">${sip.status}</span>
+                  </td>
+                  <td class="px-6 py-4 text-right space-x-2">
+                    ${sip.status === 'ACTIVE' ? `
+                      <button onclick="executeSIP(${sip.id})" class="text-indigo-600 hover:text-indigo-800 text-sm">Execute Now</button>
+                      <button onclick="pauseSIP(${sip.id})" class="text-yellow-600 hover:text-yellow-800 text-sm">Pause</button>
+                    ` : sip.status === 'PAUSED' ? `
+                      <button onclick="resumeSIP(${sip.id})" class="text-green-600 hover:text-green-800 text-sm">Resume</button>
+                    ` : ''}
+                    <button onclick="deleteSIP(${sip.id})" class="text-red-600 hover:text-red-800 text-sm">Cancel</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
         </div>
       `}
     </div>
@@ -644,369 +881,355 @@ function renderAlerts() {
         </button>
       </div>
 
-      ${state.alerts.length === 0 ? `
-        <div class="text-center py-16 bg-white rounded-xl">
-          <i class="fas fa-bell text-6xl text-gray-300 mb-4"></i>
-          <h3 class="text-xl font-medium text-gray-600 mb-2">No alerts configured</h3>
-          <p class="text-gray-500 mb-6">Set up price and rebalance alerts</p>
-          <button onclick="showCreateAlertModal()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
-            <i class="fas fa-plus mr-2"></i>Create Alert
-          </button>
-        </div>
-      ` : `
-        <div class="space-y-4">
-          ${state.alerts.map(alert => `
-            <div class="bg-white rounded-xl shadow-sm p-6 flex items-center justify-between">
-              <div class="flex items-center space-x-4">
-                <div class="w-10 h-10 rounded-full ${alert.is_triggered ? 'bg-yellow-100' : 'bg-gray-100'} flex items-center justify-center">
-                  <i class="fas fa-bell ${alert.is_triggered ? 'text-yellow-600' : 'text-gray-500'}"></i>
-                </div>
-                <div>
-                  <p class="font-medium">${alert.trading_symbol || alert.alert_type} Alert</p>
-                  <p class="text-sm text-gray-500">${alert.condition} ${alert.threshold_value}</p>
-                </div>
-              </div>
-              <div class="flex items-center space-x-4">
-                <span class="px-3 py-1 rounded-full text-sm ${alert.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
-                  ${alert.is_active ? 'Active' : 'Paused'}
-                </span>
-                <button onclick="deleteAlert(${alert.id})" class="text-red-500 hover:text-red-700">
-                  <i class="fas fa-trash"></i>
-                </button>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      `}
-    </div>
-  `;
-}
-
-function renderPerformance() {
-  return `
-    <div class="space-y-6">
-      <h1 class="text-2xl font-bold text-gray-900">Performance</h1>
-      
       <div class="bg-white rounded-xl shadow-sm p-6">
-        <h2 class="font-semibold mb-4">Portfolio Performance vs Benchmarks</h2>
-        <canvas id="performanceChart" height="300"></canvas>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-white rounded-xl shadow-sm p-6">
-          <h3 class="font-semibold mb-4">Sector Allocation</h3>
-          <canvas id="sectorChart" height="250"></canvas>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm p-6">
-          <h3 class="font-semibold mb-4">Top Holdings</h3>
-          <div class="space-y-3" id="topHoldings">
-            <p class="text-gray-500 text-center">Loading holdings...</p>
+        ${state.alerts.length === 0 ? `
+          <div class="text-center py-8 text-gray-500">
+            <i class="fas fa-bell text-4xl mb-3 opacity-50"></i>
+            <p>No alerts configured</p>
           </div>
-        </div>
+        ` : `
+          <div class="space-y-4">
+            ${state.alerts.map(alert => `
+              <div class="flex items-center justify-between p-4 rounded-lg ${alert.is_triggered ? 'bg-yellow-50' : 'bg-gray-50'}">
+                <div class="flex items-center space-x-4">
+                  <i class="fas fa-bell ${alert.is_triggered ? 'text-yellow-500' : 'text-gray-400'}"></i>
+                  <div>
+                    <p class="font-medium">${alert.trading_symbol || alert.target_type}</p>
+                    <p class="text-sm text-gray-500">${alert.condition} ${alert.threshold_value}</p>
+                  </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                  <span class="text-xs px-2 py-1 rounded-full ${alert.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
+                    ${alert.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                  <button onclick="deleteAlert(${alert.id})" class="text-red-500 hover:text-red-700">
+                    <i class="fas fa-trash"></i>
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
       </div>
     </div>
   `;
 }
 
-function renderBasketDetail() {
-  const basket = state.selectedBasket;
-  if (!basket) return '<p>Loading...</p>';
-
+function renderOrders() {
   return `
     <div class="space-y-6">
-      <div class="flex items-center space-x-4">
-        <button onclick="setView('baskets')" class="text-gray-500 hover:text-gray-700">
-          <i class="fas fa-arrow-left"></i>
-        </button>
-        <h1 class="text-2xl font-bold text-gray-900">${basket.name}</h1>
-        <span class="px-3 py-1 text-sm rounded-full ${getThemeClass(basket.theme)}">${basket.theme || 'Custom'}</span>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-2 space-y-6">
-          <!-- Basket Info -->
-          <div class="bg-white rounded-xl shadow-sm p-6">
-            <p class="text-gray-600 mb-4">${basket.description || 'No description'}</p>
-            <div class="grid grid-cols-3 gap-4">
-              <div>
-                <p class="text-sm text-gray-500">Min Investment</p>
-                <p class="font-semibold">${formatCurrency(basket.min_investment_calculated || basket.min_investment || 0)}</p>
-              </div>
-              <div>
-                <p class="text-sm text-gray-500">Risk Level</p>
-                <p class="font-semibold capitalize">${basket.risk_level}</p>
-              </div>
-              <div>
-                <p class="text-sm text-gray-500">Benchmark</p>
-                <p class="font-semibold">${basket.benchmark_symbol || 'NIFTY 50'}</p>
-              </div>
-            </div>
-          </div>
-
-          <!-- Stocks -->
-          <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-            <div class="p-6 border-b">
-              <h2 class="font-semibold">Stocks (${basket.stocks?.length || 0})</h2>
-            </div>
-            <table class="w-full">
-              <thead class="bg-gray-50">
-                <tr>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
-                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
-                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100">
-                ${(basket.stocks || []).map(stock => `
-                  <tr class="hover:bg-gray-50">
-                    <td class="px-6 py-4">
-                      <p class="font-medium">${stock.trading_symbol}</p>
-                      <p class="text-sm text-gray-500">${stock.company_name || stock.exchange}</p>
-                    </td>
-                    <td class="px-6 py-4 text-right">
-                      <div class="flex items-center justify-end space-x-2">
-                        <div class="w-24 bg-gray-200 rounded-full h-2">
-                          <div class="bg-indigo-600 h-2 rounded-full" style="width: ${stock.weight_percentage}%"></div>
-                        </div>
-                        <span>${stock.weight_percentage}%</span>
-                      </div>
-                    </td>
-                    <td class="px-6 py-4 text-right">${stock.last_price ? formatCurrency(stock.last_price) : '-'}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Sidebar -->
-        <div class="space-y-6">
-          <div class="bg-white rounded-xl shadow-sm p-6">
-            <h3 class="font-semibold mb-4">Invest in this Basket</h3>
-            <div class="space-y-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Investment Amount (₹)</label>
-                <input type="number" id="investAmount" min="${basket.min_investment_calculated || 1000}" step="100" 
-                  value="${basket.min_investment_calculated || 10000}"
-                  class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
-              </div>
-              <button onclick="buyBasket(${basket.id})" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 font-medium">
-                <i class="fas fa-shopping-cart mr-2"></i>Buy Basket
-              </button>
-              <button onclick="showCreateSIPModal(${basket.id})" class="w-full border border-indigo-600 text-indigo-600 py-3 rounded-lg hover:bg-indigo-50 font-medium">
-                <i class="fas fa-sync-alt mr-2"></i>Start SIP
-              </button>
-            </div>
-          </div>
+      <h1 class="text-2xl font-bold text-gray-900">Today's Orders</h1>
+      <div id="ordersContent" class="bg-white rounded-xl shadow-sm p-6">
+        <div class="text-center py-8">
+          <i class="fas fa-spinner fa-spin text-2xl text-indigo-600"></i>
+          <p class="mt-2 text-gray-500">Loading orders...</p>
         </div>
       </div>
     </div>
   `;
 }
 
-function renderInvestmentDetail() {
-  const inv = state.selectedInvestment;
-  if (!inv) return '<p>Loading...</p>';
-
-  const pnl = (inv.current_value || inv.invested_amount) - inv.invested_amount;
-  const pnlPct = ((pnl / inv.invested_amount) * 100).toFixed(2);
-
-  return `
-    <div class="space-y-6">
-      <div class="flex items-center space-x-4">
-        <button onclick="setView('investments')" class="text-gray-500 hover:text-gray-700">
-          <i class="fas fa-arrow-left"></i>
-        </button>
-        <h1 class="text-2xl font-bold text-gray-900">${inv.basket_name}</h1>
-      </div>
-
-      <!-- Summary Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div class="bg-white rounded-xl p-6 shadow-sm">
-          <p class="text-sm text-gray-500">Invested</p>
-          <p class="text-xl font-bold">${formatCurrency(inv.invested_amount)}</p>
-        </div>
-        <div class="bg-white rounded-xl p-6 shadow-sm">
-          <p class="text-sm text-gray-500">Current Value</p>
-          <p class="text-xl font-bold">${formatCurrency(inv.current_value || inv.invested_amount)}</p>
-        </div>
-        <div class="bg-white rounded-xl p-6 shadow-sm">
-          <p class="text-sm text-gray-500">P&L</p>
-          <p class="text-xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}</p>
-          <p class="text-sm ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">${pnl >= 0 ? '+' : ''}${pnlPct}%</p>
-        </div>
-        <div class="bg-white rounded-xl p-6 shadow-sm flex flex-col justify-center">
-          <div class="flex space-x-2">
-            <button onclick="rebalanceInvestment(${inv.id})" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 text-sm">
-              <i class="fas fa-sync-alt mr-1"></i>Rebalance
-            </button>
-            <button onclick="sellInvestment(${inv.id})" class="flex-1 bg-red-600 text-white py-2 rounded-lg hover:bg-red-700 text-sm">
-              <i class="fas fa-sign-out-alt mr-1"></i>Sell
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Holdings Table -->
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="p-6 border-b">
-          <h2 class="font-semibold">Holdings</h2>
-        </div>
-        <table class="w-full">
-          <thead class="bg-gray-50">
-            <tr>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
-              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-100">
-            ${(inv.holdings || []).map(h => {
-              const value = h.quantity * (h.current_price || h.average_price);
-              const hPnl = h.pnl || (value - h.quantity * h.average_price);
-              return `
-                <tr class="hover:bg-gray-50">
-                  <td class="px-6 py-4 font-medium">${h.trading_symbol}</td>
-                  <td class="px-6 py-4 text-right">${h.quantity}</td>
-                  <td class="px-6 py-4 text-right">${formatCurrency(h.average_price)}</td>
-                  <td class="px-6 py-4 text-right">${formatCurrency(h.current_price || h.average_price)}</td>
-                  <td class="px-6 py-4 text-right">${formatCurrency(value)}</td>
-                  <td class="px-6 py-4 text-right ${hPnl >= 0 ? 'text-green-600' : 'text-red-600'}">
-                    ${hPnl >= 0 ? '+' : ''}${formatCurrency(hPnl)}
-                  </td>
-                  <td class="px-6 py-4 text-right">${(h.actual_weight || 0).toFixed(1)}%</td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-// Modals
 function renderModals() {
   return `
-    <!-- Create Basket Modal -->
-    <div id="createBasketModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-      <div class="bg-white rounded-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-        <div class="p-6 border-b flex justify-between items-center sticky top-0 bg-white">
-          <h3 class="text-xl font-bold">Create New Basket</h3>
-          <button onclick="hideModal('createBasketModal')" class="text-gray-400 hover:text-gray-600">
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+      <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4">
+        <div class="flex justify-between items-center mb-6">
+          <h3 class="text-xl font-bold">Settings</h3>
+          <button onclick="hideSettingsModal()" class="text-gray-400 hover:text-gray-600">
             <i class="fas fa-times"></i>
           </button>
         </div>
-        <form id="createBasketForm" onsubmit="handleCreateBasket(event)" class="p-6 space-y-6">
-          <div class="grid grid-cols-2 gap-4">
-            <div class="col-span-2">
-              <label class="block text-sm font-medium text-gray-700 mb-1">Basket Name *</label>
-              <input type="text" name="name" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="My Stock Basket">
-            </div>
-            <div class="col-span-2">
-              <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-              <textarea name="description" rows="2" class="w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="What's this basket about?"></textarea>
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Theme</label>
-              <select name="theme" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
-                <option value="">Select Theme</option>
-                <option value="Technology">Technology</option>
-                <option value="Banking">Banking</option>
-                <option value="Healthcare">Healthcare</option>
-                <option value="Consumer">Consumer</option>
-                <option value="Automobile">Automobile</option>
-                <option value="Index">Index</option>
-                <option value="Dividend">Dividend</option>
-                <option value="Growth">Growth</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Risk Level</label>
-              <select name="risk_level" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
-                <option value="moderate">Moderate</option>
-                <option value="low">Low</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-          </div>
-
+        
+        <div class="space-y-6">
           <div>
-            <div class="flex justify-between items-center mb-2">
-              <label class="block text-sm font-medium text-gray-700">Stocks *</label>
-              <span class="text-sm text-gray-500">Total: <span id="totalWeight">0</span>%</span>
+            <h4 class="font-medium mb-2">API Credentials</h4>
+            <p class="text-sm text-gray-500 mb-4">Update your Zerodha Kite API credentials</p>
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                <input type="text" id="settingsApiKey" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Key">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">API Secret</label>
+                <input type="password" id="settingsApiSecret" class="w-full px-4 py-2 border rounded-lg" placeholder="Your API Secret">
+              </div>
+              <button onclick="updateCredentials()" class="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">
+                Update Credentials
+              </button>
             </div>
-            <div id="stocksList" class="space-y-2"></div>
-            <button type="button" onclick="addStockRow()" class="mt-3 text-indigo-600 hover:text-indigo-800 text-sm">
-              <i class="fas fa-plus mr-1"></i>Add Stock
+          </div>
+          
+          <div class="border-t pt-6">
+            <h4 class="font-medium mb-2">Master Instruments</h4>
+            <p class="text-sm text-gray-500 mb-2">
+              ${state.instrumentsStatus?.total_instruments || 0} instruments loaded
+              ${state.instrumentsStatus?.last_download ? `<br>Last updated: ${new Date(state.instrumentsStatus.last_download).toLocaleDateString()}` : ''}
+            </p>
+            <button onclick="downloadInstruments()" class="w-full border border-indigo-600 text-indigo-600 py-2 rounded-lg hover:bg-indigo-50">
+              <i class="fas fa-download mr-2"></i>Download Instruments
             </button>
           </div>
-
-          <div class="flex items-center">
-            <input type="checkbox" name="is_public" id="isPublic" class="mr-2">
-            <label for="isPublic" class="text-sm text-gray-600">Make this basket public</label>
-          </div>
-
-          <div class="flex space-x-4">
-            <button type="button" onclick="hideModal('createBasketModal')" class="flex-1 border border-gray-300 py-3 rounded-lg hover:bg-gray-50">
-              Cancel
-            </button>
-            <button type="submit" class="flex-1 bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
-              Create Basket
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
 
     <!-- Invest Modal -->
     <div id="investModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-      <div class="bg-white rounded-xl max-w-md w-full mx-4">
-        <div class="p-6 border-b flex justify-between items-center">
-          <h3 class="text-xl font-bold">Confirm Investment</h3>
-          <button onclick="hideModal('investModal')" class="text-gray-400 hover:text-gray-600">
+      <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4">
+        <div class="flex justify-between items-center mb-6">
+          <h3 class="text-xl font-bold">Invest in Basket</h3>
+          <button onclick="hideInvestModal()" class="text-gray-400 hover:text-gray-600">
             <i class="fas fa-times"></i>
           </button>
         </div>
-        <div id="investModalContent" class="p-6">
-          <!-- Content populated dynamically -->
-        </div>
+        <form onsubmit="handleInvest(event)">
+          <input type="hidden" id="investBasketId">
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Investment Amount (₹)</label>
+            <input type="number" id="investAmount" required min="1000" step="100"
+              class="w-full px-4 py-2 border rounded-lg" placeholder="10000">
+            <p class="text-xs text-gray-500 mt-1">Minimum ₹1,000</p>
+          </div>
+          <div class="mb-6">
+            <label class="flex items-center">
+              <input type="checkbox" id="useDirectApi" checked class="mr-2">
+              <span class="text-sm">Place orders directly via API</span>
+            </label>
+            <p class="text-xs text-gray-500 mt-1">Uncheck to use Zerodha's external order page</p>
+          </div>
+          <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
+            <i class="fas fa-shopping-cart mr-2"></i>Invest Now
+          </button>
+        </form>
       </div>
     </div>
 
-    <!-- Notification Toast -->
-    <div id="notification" class="fixed bottom-4 right-4 transform translate-y-full transition-transform duration-300 z-50">
-      <div class="bg-gray-800 text-white px-6 py-3 rounded-lg shadow-lg flex items-center space-x-3">
-        <i id="notificationIcon" class="fas fa-check-circle"></i>
-        <span id="notificationMessage">Notification</span>
+    <!-- SIP Modal -->
+    <div id="sipModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+      <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4">
+        <div class="flex justify-between items-center mb-6">
+          <h3 class="text-xl font-bold">Create SIP</h3>
+          <button onclick="hideSIPModal()" class="text-gray-400 hover:text-gray-600">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <form onsubmit="handleCreateSIP(event)">
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Select Basket</label>
+              <select id="sipBasketId" required class="w-full px-4 py-2 border rounded-lg">
+                <option value="">Choose a basket</option>
+                ${state.baskets.map(b => `<option value="${b.id}">${b.name}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Amount (₹)</label>
+              <input type="number" id="sipAmount" required min="500" step="100"
+                class="w-full px-4 py-2 border rounded-lg" placeholder="5000">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Frequency</label>
+              <select id="sipFrequency" required class="w-full px-4 py-2 border rounded-lg">
+                <option value="monthly">Monthly</option>
+                <option value="weekly">Weekly</option>
+                <option value="daily">Daily</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+              <input type="date" id="sipStartDate" required class="w-full px-4 py-2 border rounded-lg">
+            </div>
+          </div>
+          <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 mt-6">
+            <i class="fas fa-calendar-check mr-2"></i>Create SIP
+          </button>
+        </form>
       </div>
     </div>
   `;
 }
 
-// Event Handlers
-function attachEventListeners() {
-  // Load explore data if on explore view
-  if (state.currentView === 'explore') {
-    loadExploreData();
-  }
+// Event handlers
+function setView(view) {
+  state.currentView = view;
+  renderApp();
   
-  // Initialize performance charts if on that view
-  if (state.currentView === 'performance') {
-    initializeCharts();
+  if (view === 'explore') {
+    loadTemplates();
+  } else if (view === 'orders') {
+    loadOrders();
+  } else if (view === 'create-basket') {
+    state.basketStocks = [];
   }
 }
 
-// Navigation
-function setView(view) {
-  state.currentView = view;
-  state.selectedBasket = null;
-  state.selectedInvestment = null;
-  renderApp();
+function handleLogout() {
+  localStorage.removeItem('session_id');
+  api.post('/auth/logout');
+  window.location.href = '/';
+}
+
+async function switchAccount(accountId) {
+  const res = await api.post('/auth/switch-account', { account_id: accountId });
+  if (res?.success) {
+    await loadDashboardData();
+    const authRes = await api.get('/auth/status');
+    if (authRes?.success) {
+      state.account = authRes.data.account;
+    }
+    renderApp();
+    showNotification('Account switched successfully', 'success');
+  }
+}
+
+function addNewAccount() {
+  window.location.href = '/api/auth/login';
+}
+
+// Search functionality
+let searchTimeout;
+function debounceSearch(query) {
+  clearTimeout(searchTimeout);
+  if (query.length < 1) {
+    document.getElementById('searchResults').classList.add('hidden');
+    return;
+  }
+  searchTimeout = setTimeout(() => searchStocks(query), 300);
+}
+
+async function searchStocks(query) {
+  const res = await api.get(`/instruments/search?q=${encodeURIComponent(query)}&with_ltp=true`);
+  if (res?.success) {
+    state.searchResults = res.data;
+    renderSearchResults();
+  }
+}
+
+function renderSearchResults() {
+  const container = document.getElementById('searchResults');
+  if (state.searchResults.length === 0) {
+    container.innerHTML = '<div class="p-4 text-gray-500">No results found</div>';
+  } else {
+    container.innerHTML = state.searchResults.map(stock => `
+      <div class="p-3 hover:bg-gray-50 cursor-pointer border-b last:border-0" onclick="addStock(${JSON.stringify(stock).replace(/"/g, '&quot;')})">
+        <div class="flex justify-between items-center">
+          <div>
+            <p class="font-medium">${stock.trading_symbol}</p>
+            <p class="text-xs text-gray-500">${stock.name || ''} • ${stock.exchange}</p>
+          </div>
+          ${stock.last_price ? `<span class="text-sm font-medium">${formatCurrency(stock.last_price)}</span>` : ''}
+        </div>
+      </div>
+    `).join('');
+  }
+  container.classList.remove('hidden');
+}
+
+function addStock(stock) {
+  if (state.basketStocks.length >= 20) {
+    showNotification('Maximum 20 stocks allowed', 'warning');
+    return;
+  }
+  
+  if (state.basketStocks.find(s => s.trading_symbol === stock.trading_symbol && s.exchange === stock.exchange)) {
+    showNotification('Stock already added', 'warning');
+    return;
+  }
+  
+  stock.weight_percentage = 0;
+  state.basketStocks.push(stock);
+  applyEqualWeights();
+  
+  document.getElementById('searchResults').classList.add('hidden');
+  document.getElementById('stockSearch').value = '';
+}
+
+function removeStock(index) {
+  state.basketStocks.splice(index, 1);
+  applyEqualWeights();
+}
+
+function updateStockWeight(index, value) {
+  const newWeight = parseFloat(value) || 0;
+  state.basketStocks[index].weight_percentage = newWeight;
+  
+  // Recalculate other weights
+  const remainingWeight = 100 - newWeight;
+  const remainingStocks = state.basketStocks.length - 1;
+  const equalWeight = remainingStocks > 0 ? remainingWeight / remainingStocks : 0;
+  
+  state.basketStocks.forEach((stock, i) => {
+    if (i !== index) {
+      stock.weight_percentage = parseFloat(equalWeight.toFixed(2));
+    }
+  });
+  
+  updateWeightDisplay();
+  document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
+}
+
+function applyEqualWeights() {
+  if (state.basketStocks.length === 0) {
+    updateWeightDisplay();
+    document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
+    return;
+  }
+  
+  const equalWeight = parseFloat((100 / state.basketStocks.length).toFixed(2));
+  state.basketStocks.forEach((stock, index) => {
+    stock.weight_percentage = equalWeight;
+  });
+  
+  // Adjust last stock for rounding
+  const total = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
+  if (Math.abs(total - 100) > 0.01 && state.basketStocks.length > 0) {
+    state.basketStocks[state.basketStocks.length - 1].weight_percentage += (100 - total);
+  }
+  
+  updateWeightDisplay();
+  document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
+}
+
+function updateWeightDisplay() {
+  const total = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
+  document.getElementById('totalWeight').textContent = total.toFixed(2) + '%';
+  document.getElementById('stockCount').textContent = state.basketStocks.length;
+}
+
+async function handleCreateBasket(e) {
+  e.preventDefault();
+  
+  if (state.basketStocks.length === 0) {
+    showNotification('Please add at least one stock', 'warning');
+    return;
+  }
+  
+  const totalWeight = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
+  if (Math.abs(totalWeight - 100) > 0.1) {
+    showNotification('Total weight must equal 100%', 'warning');
+    return;
+  }
+  
+  const data = {
+    name: document.getElementById('basketName').value,
+    description: document.getElementById('basketDescription').value,
+    theme: document.getElementById('basketTheme').value,
+    stocks: state.basketStocks.map(s => ({
+      trading_symbol: s.trading_symbol,
+      exchange: s.exchange,
+      weight_percentage: s.weight_percentage
+    }))
+  };
+  
+  const res = await api.post('/baskets', data);
+  if (res?.success) {
+    showNotification('Basket created successfully!', 'success');
+    await loadDashboardData();
+    setView('baskets');
+  } else {
+    showNotification(res?.error?.message || 'Failed to create basket', 'error');
+  }
 }
 
 async function viewBasket(basketId) {
@@ -1027,212 +1250,73 @@ async function viewInvestment(investmentId) {
   }
 }
 
-// Basket Operations
-function showCreateBasketModal() {
-  document.getElementById('createBasketModal').classList.remove('hidden');
-  document.getElementById('createBasketModal').classList.add('flex');
-  document.getElementById('stocksList').innerHTML = '';
-  addStockRow();
-  addStockRow();
-  addStockRow();
+function investInBasket(basketId) {
+  document.getElementById('investBasketId').value = basketId;
+  document.getElementById('investModal').classList.remove('hidden');
+  document.getElementById('investModal').classList.add('flex');
 }
 
-function addStockRow() {
-  const stocksList = document.getElementById('stocksList');
-  const row = document.createElement('div');
-  row.className = 'flex space-x-2 items-center stock-row';
-  row.innerHTML = `
-    <input type="text" placeholder="Symbol (e.g., TCS)" class="flex-1 px-3 py-2 border border-gray-300 rounded-lg stock-symbol" required>
-    <select class="w-24 px-2 py-2 border border-gray-300 rounded-lg stock-exchange">
-      <option value="NSE">NSE</option>
-      <option value="BSE">BSE</option>
-    </select>
-    <input type="number" placeholder="Weight %" class="w-24 px-3 py-2 border border-gray-300 rounded-lg stock-weight" min="1" max="100" required onchange="updateTotalWeight()">
-    <button type="button" onclick="removeStockRow(this)" class="text-red-500 hover:text-red-700 p-2">
-      <i class="fas fa-times"></i>
-    </button>
-  `;
-  stocksList.appendChild(row);
+function hideInvestModal() {
+  document.getElementById('investModal').classList.add('hidden');
+  document.getElementById('investModal').classList.remove('flex');
 }
 
-function removeStockRow(btn) {
-  btn.closest('.stock-row').remove();
-  updateTotalWeight();
-}
-
-function updateTotalWeight() {
-  const weights = document.querySelectorAll('.stock-weight');
-  let total = 0;
-  weights.forEach(w => total += parseFloat(w.value) || 0);
-  document.getElementById('totalWeight').textContent = total;
-  document.getElementById('totalWeight').className = total === 100 ? 'text-green-600' : 'text-red-600';
-}
-
-async function handleCreateBasket(event) {
-  event.preventDefault();
-  const form = event.target;
-  const formData = new FormData(form);
+async function handleInvest(e) {
+  e.preventDefault();
   
-  const stocks = [];
-  document.querySelectorAll('.stock-row').forEach(row => {
-    const symbol = row.querySelector('.stock-symbol').value.trim().toUpperCase();
-    const exchange = row.querySelector('.stock-exchange').value;
-    const weight = parseFloat(row.querySelector('.stock-weight').value) || 0;
-    if (symbol && weight > 0) {
-      stocks.push({ trading_symbol: symbol, exchange, weight_percentage: weight });
-    }
+  const basketId = document.getElementById('investBasketId').value;
+  const amount = parseFloat(document.getElementById('investAmount').value);
+  const useDirectApi = document.getElementById('useDirectApi').checked;
+  
+  const res = await api.post(`/investments/buy/${basketId}`, {
+    investment_amount: amount,
+    use_direct_api: useDirectApi
   });
-
-  if (stocks.length === 0) {
-    showNotification('Add at least one stock', 'error');
-    return;
-  }
-
-  const totalWeight = stocks.reduce((sum, s) => sum + s.weight_percentage, 0);
-  if (Math.abs(totalWeight - 100) > 0.01) {
-    showNotification('Stock weights must sum to 100%', 'error');
-    return;
-  }
-
-  const basket = {
-    name: formData.get('name'),
-    description: formData.get('description'),
-    theme: formData.get('theme'),
-    risk_level: formData.get('risk_level'),
-    is_public: formData.get('is_public') === 'on',
-    stocks
-  };
-
-  const res = await api.post('/baskets', basket);
-  if (res?.success) {
-    showNotification('Basket created successfully!', 'success');
-    hideModal('createBasketModal');
-    await loadDashboardData();
-    renderApp();
-  } else {
-    showNotification(res?.error?.message || 'Failed to create basket', 'error');
-  }
-}
-
-async function buyBasket(basketId) {
-  const amount = parseFloat(document.getElementById('investAmount')?.value || 10000);
   
-  const res = await api.post(`/investments/buy/${basketId}`, { investment_amount: amount });
   if (res?.success) {
-    // Show order preview and redirect to Kite
-    const data = res.data;
-    const modalContent = document.getElementById('investModalContent');
-    modalContent.innerHTML = `
-      <div class="space-y-4">
-        <div class="bg-gray-50 rounded-lg p-4">
-          <p class="text-sm text-gray-500 mb-2">Order Summary</p>
-          ${data.orders.map(o => `
-            <div class="flex justify-between text-sm py-1">
-              <span>${o.trading_symbol}</span>
-              <span>${o.quantity} shares</span>
-            </div>
-          `).join('')}
-          <div class="border-t mt-2 pt-2 flex justify-between font-semibold">
-            <span>Total Amount</span>
-            <span>${formatCurrency(data.total_amount)}</span>
-          </div>
-          ${data.unused_amount > 0 ? `<p class="text-xs text-gray-500 mt-2">Unused: ${formatCurrency(data.unused_amount)}</p>` : ''}
-        </div>
-        
-        <p class="text-sm text-gray-600">You will be redirected to Zerodha Kite to place these orders.</p>
-        
-        <form action="${data.kite_basket_url}" method="POST" target="_blank">
-          <input type="hidden" name="api_key" value="${data.kite_basket_data.api_key}">
-          <input type="hidden" name="data" value='${data.kite_basket_data.data}'>
-          <button type="submit" onclick="handleKiteRedirect(${data.transaction_id})" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
-            <i class="fas fa-external-link-alt mr-2"></i>Place Order on Kite
-          </button>
-        </form>
-        
-        <button onclick="hideModal('investModal')" class="w-full border border-gray-300 py-2 rounded-lg hover:bg-gray-50">
-          Cancel
-        </button>
-      </div>
-    `;
-    
-    document.getElementById('investModal').classList.remove('hidden');
-    document.getElementById('investModal').classList.add('flex');
+    hideInvestModal();
+    if (res.data.investment_id) {
+      showNotification(`Investment successful! ${res.data.orders_placed} orders placed.`, 'success');
+      await loadDashboardData();
+      viewInvestment(res.data.investment_id);
+    } else if (res.data.kite_basket_url) {
+      // External Kite execution
+      showNotification('Redirecting to Zerodha...', 'info');
+      // In a real app, you'd POST to the Kite URL
+    }
   } else {
-    showNotification(res?.error?.message || 'Failed to create order', 'error');
-  }
-}
-
-function handleKiteRedirect(transactionId) {
-  // Store transaction ID to confirm later
-  localStorage.setItem('pending_transaction', transactionId);
-  showNotification('Complete the order on Kite, then return here', 'info');
-}
-
-async function rebalanceInvestment(investmentId) {
-  const res = await api.get(`/investments/${investmentId}/rebalance-preview?threshold=5`);
-  if (res?.success) {
-    const data = res.data;
-    if (!data.summary.rebalance_needed) {
-      showNotification('Portfolio is already balanced!', 'success');
-      return;
-    }
-    
-    const modalContent = document.getElementById('investModalContent');
-    modalContent.innerHTML = `
-      <div class="space-y-4">
-        <h4 class="font-semibold">Rebalance Preview</h4>
-        <div class="bg-gray-50 rounded-lg p-4 max-h-60 overflow-y-auto">
-          ${data.recommendations.filter(r => r.action !== 'HOLD').map(r => `
-            <div class="flex justify-between text-sm py-1 ${r.action === 'BUY' ? 'text-green-600' : 'text-red-600'}">
-              <span>${r.action} ${r.trading_symbol}</span>
-              <span>${r.quantity} shares (${formatCurrency(r.amount)})</span>
-            </div>
-          `).join('')}
-        </div>
-        <div class="grid grid-cols-2 gap-4 text-sm">
-          <div class="bg-green-50 p-3 rounded-lg">
-            <p class="text-green-600">To Buy</p>
-            <p class="font-semibold">${formatCurrency(data.summary.buy_amount)}</p>
-          </div>
-          <div class="bg-red-50 p-3 rounded-lg">
-            <p class="text-red-600">To Sell</p>
-            <p class="font-semibold">${formatCurrency(data.summary.sell_amount)}</p>
-          </div>
-        </div>
-        <button onclick="executeRebalance(${investmentId})" class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700">
-          Execute Rebalance
-        </button>
-      </div>
-    `;
-    
-    document.getElementById('investModal').classList.remove('hidden');
-    document.getElementById('investModal').classList.add('flex');
-  }
-}
-
-async function executeRebalance(investmentId) {
-  const res = await api.post(`/investments/${investmentId}/rebalance`, { threshold: 5 });
-  if (res?.success) {
-    // Redirect to Kite for order execution
-    const data = res.data;
-    if (data.kite_basket_url) {
-      // Similar flow as buy
-      showNotification('Rebalance orders generated. Complete on Kite.', 'success');
-    }
-    hideModal('investModal');
+    showNotification(res?.error?.message || 'Investment failed', 'error');
   }
 }
 
 async function sellInvestment(investmentId) {
-  if (!confirm('Are you sure you want to sell all holdings in this investment?')) return;
+  if (!confirm('Are you sure you want to sell this investment?')) return;
   
-  const res = await api.post(`/investments/${investmentId}/sell`, { percentage: 100 });
+  const res = await api.post(`/investments/${investmentId}/sell`, { percentage: 100, use_direct_api: true });
   if (res?.success) {
-    showNotification('Sell order generated. Complete on Kite.', 'success');
+    showNotification(`Sell orders placed: ${res.data.orders_placed}`, 'success');
+    await loadDashboardData();
+    setView('investments');
+  } else {
+    showNotification(res?.error?.message || 'Failed to sell', 'error');
   }
 }
 
-async function confirmDeleteBasket(basketId) {
+async function rebalanceInvestment(investmentId) {
+  const res = await api.post(`/investments/${investmentId}/rebalance`, { threshold: 5, use_direct_api: true });
+  if (res?.success) {
+    if (res.data.rebalanced === false) {
+      showNotification('No rebalancing needed', 'info');
+    } else {
+      showNotification(`Rebalanced: ${res.data.orders_placed} orders placed`, 'success');
+      await loadDashboardData();
+    }
+  } else {
+    showNotification(res?.error?.message || 'Rebalance failed', 'error');
+  }
+}
+
+async function deleteBasket(basketId) {
   if (!confirm('Are you sure you want to delete this basket?')) return;
   
   const res = await api.delete(`/baskets/${basketId}`);
@@ -1243,38 +1327,202 @@ async function confirmDeleteBasket(basketId) {
   }
 }
 
-// Account Operations
-async function switchAccount(accountId) {
-  const res = await api.post('/auth/switch-account', { account_id: accountId });
+// Settings
+function showSettingsModal() {
+  document.getElementById('settingsModal').classList.remove('hidden');
+  document.getElementById('settingsModal').classList.add('flex');
+}
+
+function hideSettingsModal() {
+  document.getElementById('settingsModal').classList.add('hidden');
+  document.getElementById('settingsModal').classList.remove('flex');
+}
+
+async function updateCredentials() {
+  const apiKey = document.getElementById('settingsApiKey').value;
+  const apiSecret = document.getElementById('settingsApiSecret').value;
+  
+  if (!apiKey || !apiSecret) {
+    showNotification('Please fill in both fields', 'warning');
+    return;
+  }
+  
+  const res = await api.put('/setup/credentials', {
+    kite_api_key: apiKey,
+    kite_api_secret: apiSecret,
+    update_type: 'app'
+  });
+  
   if (res?.success) {
-    showNotification('Switched account', 'success');
-    await loadDashboardData();
-    const authRes = await api.get('/auth/status');
-    if (authRes?.success) {
-      state.account = authRes.data.account;
-    }
-    renderApp();
+    showNotification('Credentials updated!', 'success');
+    hideSettingsModal();
+  } else {
+    showNotification(res?.error?.message || 'Update failed', 'error');
   }
 }
 
-function addNewAccount() {
-  window.location.href = '/api/auth/login';
+async function downloadInstruments() {
+  showNotification('Downloading instruments... This may take a minute.', 'info');
+  
+  const res = await api.post('/instruments/download');
+  if (res?.success) {
+    showNotification(`Downloaded ${res.data.downloaded} instruments!`, 'success');
+    state.instrumentsStatus = await (await api.get('/instruments/status')).data;
+    renderApp();
+  } else {
+    showNotification(res?.error?.message || 'Download failed', 'error');
+  }
 }
 
-function handleLogout() {
-  api.post('/auth/logout');
-  localStorage.removeItem('session_id');
-  window.location.href = '/';
+// Holdings tab
+function showHoldingsTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.remove('border-indigo-500', 'text-indigo-600');
+    btn.classList.add('border-transparent', 'text-gray-500');
+  });
+  document.getElementById(`tab-${tab}`).classList.remove('border-transparent', 'text-gray-500');
+  document.getElementById(`tab-${tab}`).classList.add('border-indigo-500', 'text-indigo-600');
+  
+  if (tab === 'portfolio') {
+    document.getElementById('holdings-content').innerHTML = renderPortfolioHoldings();
+  } else {
+    refreshZerodhaHoldings();
+  }
 }
 
-// SIP Operations
-async function showCreateSIPModal(basketId) {
-  // TODO: Implement SIP creation modal
-  showNotification('SIP creation coming soon!', 'info');
+async function refreshZerodhaHoldings() {
+  document.getElementById('holdings-content').innerHTML = `
+    <div class="text-center py-8">
+      <i class="fas fa-spinner fa-spin text-2xl text-indigo-600"></i>
+      <p class="mt-2 text-gray-500">Fetching from Zerodha...</p>
+    </div>
+  `;
+  
+  const res = await api.get('/portfolio/zerodha-holdings');
+  if (res?.success) {
+    state.zerodhaHoldings = res.data.holdings;
+    renderZerodhaHoldings(res.data);
+  } else {
+    document.getElementById('holdings-content').innerHTML = `
+      <div class="text-center py-8 text-red-500">
+        <i class="fas fa-exclamation-circle text-4xl mb-2"></i>
+        <p>${res?.error?.message || 'Failed to fetch holdings'}</p>
+      </div>
+    `;
+  }
+}
+
+function renderZerodhaHoldings(data) {
+  const { holdings, summary } = data;
+  
+  document.getElementById('holdings-content').innerHTML = `
+    <div class="space-y-6">
+      <div class="grid grid-cols-3 gap-4">
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Total Invested</p>
+          <p class="text-xl font-bold">${formatCurrency(summary.total_invested)}</p>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Current Value</p>
+          <p class="text-xl font-bold">${formatCurrency(summary.total_current)}</p>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-4">
+          <p class="text-sm text-gray-500">Total P&L</p>
+          <p class="text-xl font-bold ${summary.total_pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+            ${summary.total_pnl >= 0 ? '+' : ''}${formatCurrency(summary.total_pnl)} (${summary.total_pnl_percentage?.toFixed(2)}%)
+          </p>
+        </div>
+      </div>
+
+      <table class="w-full">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y">
+          ${holdings.map(h => `
+            <tr class="hover:bg-gray-50">
+              <td class="px-4 py-3">
+                <div>
+                  <p class="font-medium">${h.tradingsymbol}</p>
+                  <p class="text-xs text-gray-500">${h.exchange}</p>
+                </div>
+              </td>
+              <td class="px-4 py-3 text-right">${h.quantity}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.average_price)}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.last_price)}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(h.current_value)}</td>
+              <td class="px-4 py-3 text-right">
+                <span class="${h.pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+                  ${h.pnl >= 0 ? '+' : ''}${formatCurrency(h.pnl)}
+                  <br>
+                  <span class="text-xs">${h.pnl_percentage?.toFixed(2)}%</span>
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// SIP functions
+function showCreateSIPModal() {
+  document.getElementById('sipStartDate').value = new Date().toISOString().split('T')[0];
+  document.getElementById('sipModal').classList.remove('hidden');
+  document.getElementById('sipModal').classList.add('flex');
+}
+
+function hideSIPModal() {
+  document.getElementById('sipModal').classList.add('hidden');
+  document.getElementById('sipModal').classList.remove('flex');
+}
+
+async function handleCreateSIP(e) {
+  e.preventDefault();
+  
+  const res = await api.post('/sip', {
+    basket_id: parseInt(document.getElementById('sipBasketId').value),
+    amount: parseFloat(document.getElementById('sipAmount').value),
+    frequency: document.getElementById('sipFrequency').value,
+    start_date: document.getElementById('sipStartDate').value
+  });
+  
+  if (res?.success) {
+    showNotification('SIP created successfully!', 'success');
+    hideSIPModal();
+    await loadDashboardData();
+    setView('sip');
+  } else {
+    showNotification(res?.error?.message || 'Failed to create SIP', 'error');
+  }
+}
+
+async function executeSIP(sipId) {
+  const res = await api.post(`/sip/${sipId}/execute`);
+  if (res?.success) {
+    showNotification('SIP execution initiated', 'success');
+    // Now trigger the actual buy
+    await api.post(`/investments/buy/${res.data.basket_id}`, {
+      investment_amount: res.data.amount,
+      use_direct_api: true
+    });
+    await loadDashboardData();
+    renderApp();
+  } else {
+    showNotification(res?.error?.message || 'Failed to execute SIP', 'error');
+  }
 }
 
 async function pauseSIP(sipId) {
-  const res = await api.put(`/sip/${sipId}`, { status: 'PAUSED' });
+  const res = await api.post(`/sip/${sipId}/pause`);
   if (res?.success) {
     showNotification('SIP paused', 'success');
     await loadDashboardData();
@@ -1283,7 +1531,7 @@ async function pauseSIP(sipId) {
 }
 
 async function resumeSIP(sipId) {
-  const res = await api.put(`/sip/${sipId}`, { status: 'ACTIVE' });
+  const res = await api.post(`/sip/${sipId}/resume`);
   if (res?.success) {
     showNotification('SIP resumed', 'success');
     await loadDashboardData();
@@ -1291,162 +1539,259 @@ async function resumeSIP(sipId) {
   }
 }
 
-// Alert Operations
-async function showCreateAlertModal() {
-  showNotification('Alert creation coming soon!', 'info');
-}
-
-async function deleteAlert(alertId) {
-  const res = await api.delete(`/alerts/${alertId}`);
+async function deleteSIP(sipId) {
+  if (!confirm('Are you sure you want to cancel this SIP?')) return;
+  
+  const res = await api.delete(`/sip/${sipId}`);
   if (res?.success) {
-    showNotification('Alert deleted', 'success');
+    showNotification('SIP cancelled', 'success');
     await loadDashboardData();
     renderApp();
   }
 }
 
-// Explore Data
-async function loadExploreData() {
-  const [templatesRes, publicRes] = await Promise.all([
-    api.get('/baskets/templates'),
-    api.get('/baskets/public')
-  ]);
-
-  const templatesGrid = document.getElementById('templatesGrid');
-  const publicGrid = document.getElementById('publicBasketsGrid');
-
-  if (templatesRes?.success && templatesGrid) {
-    templatesGrid.innerHTML = templatesRes.data.length === 0 
-      ? '<p class="col-span-4 text-center text-gray-500 py-8">No templates available</p>'
-      : templatesRes.data.map(renderBasketCard).join('');
-  }
-
-  if (publicRes?.success && publicGrid) {
-    publicGrid.innerHTML = publicRes.data.length === 0
-      ? '<p class="col-span-4 text-center text-gray-500 py-8">No public baskets yet</p>'
-      : publicRes.data.map(renderBasketCard).join('');
+// Load templates
+async function loadTemplates() {
+  const res = await api.get('/baskets/templates');
+  if (res?.success && res.data.length > 0) {
+    document.getElementById('templatesGrid').innerHTML = res.data.map(t => `
+      <div class="bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition cursor-pointer" onclick="viewBasket(${t.id})">
+        <div class="flex items-center justify-between mb-4">
+          <span class="px-3 py-1 text-xs rounded-full ${getThemeClass(t.theme)}">${t.theme || 'General'}</span>
+          <span class="text-sm text-gray-500">${t.stock_count || 0} stocks</span>
+        </div>
+        <h3 class="text-lg font-semibold mb-2">${t.name}</h3>
+        <p class="text-gray-600 text-sm mb-4 line-clamp-2">${t.description || ''}</p>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-400">${t.clone_count || 0} clones</span>
+          <button onclick="event.stopPropagation(); cloneBasket(${t.id})" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+            Clone <i class="fas fa-copy ml-1"></i>
+          </button>
+        </div>
+      </div>
+    `).join('');
   }
 }
 
-function renderBasketCard(basket) {
+async function cloneBasket(basketId) {
+  const res = await api.post(`/baskets/${basketId}/clone`, {});
+  if (res?.success) {
+    showNotification('Basket cloned successfully!', 'success');
+    await loadDashboardData();
+    viewBasket(res.data.basket_id);
+  } else {
+    showNotification(res?.error?.message || 'Clone failed', 'error');
+  }
+}
+
+// Load orders
+async function loadOrders() {
+  const res = await api.get('/portfolio/orders');
+  if (res?.success) {
+    const orders = res.data || [];
+    document.getElementById('ordersContent').innerHTML = orders.length === 0 ? `
+      <div class="text-center py-8 text-gray-500">
+        <i class="fas fa-receipt text-4xl mb-2 opacity-50"></i>
+        <p>No orders today</p>
+      </div>
+    ` : `
+      <table class="w-full">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Type</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Price</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y">
+          ${orders.map(o => `
+            <tr class="hover:bg-gray-50">
+              <td class="px-4 py-3 font-medium">${o.tradingsymbol}</td>
+              <td class="px-4 py-3 text-center">
+                <span class="${o.transaction_type === 'BUY' ? 'text-green-600' : 'text-red-600'}">${o.transaction_type}</span>
+              </td>
+              <td class="px-4 py-3 text-right">${o.quantity}</td>
+              <td class="px-4 py-3 text-right">${formatCurrency(o.price || o.average_price)}</td>
+              <td class="px-4 py-3 text-center">
+                <span class="px-2 py-1 text-xs rounded-full ${
+                  o.status === 'COMPLETE' ? 'bg-green-100 text-green-800' :
+                  o.status === 'REJECTED' ? 'bg-red-100 text-red-800' :
+                  'bg-yellow-100 text-yellow-800'
+                }">${o.status}</span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+}
+
+function attachEventListeners() {
+  // Close modals on outside click
+  document.querySelectorAll('.fixed').forEach(modal => {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    });
+  });
+}
+
+// Basket detail view
+function renderBasketDetail() {
+  const basket = state.selectedBasket;
+  if (!basket) return '<p>Loading...</p>';
+  
   return `
-    <div class="bg-white rounded-xl shadow-sm overflow-hidden hover:shadow-md transition cursor-pointer" onclick="viewBasket(${basket.id})">
-      <div class="p-6">
-        <div class="flex justify-between items-start mb-3">
-          <span class="px-3 py-1 text-xs font-medium rounded-full ${getThemeClass(basket.theme)}">${basket.theme || 'Custom'}</span>
-          <span class="text-xs text-gray-400">${basket.clone_count || 0} clones</span>
+    <div class="space-y-6">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-4">
+          <button onclick="setView('baskets')" class="text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left"></i>
+          </button>
+          <div>
+            <h1 class="text-2xl font-bold text-gray-900">${basket.name}</h1>
+            <p class="text-gray-500">${basket.description || ''}</p>
+          </div>
         </div>
-        <h3 class="font-semibold text-gray-900 mb-2">${basket.name}</h3>
-        <p class="text-sm text-gray-500 line-clamp-2 mb-4">${basket.description || ''}</p>
-        <div class="flex justify-between text-sm text-gray-500">
-          <span>${basket.stock_count || 0} stocks</span>
-          <span class="capitalize">${basket.risk_level || 'moderate'} risk</span>
+        <div class="flex space-x-2">
+          <button onclick="investInBasket(${basket.id})" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+            <i class="fas fa-shopping-cart mr-2"></i>Invest
+          </button>
         </div>
       </div>
-      <div class="px-6 py-3 bg-gray-50 flex justify-between">
-        <button onclick="event.stopPropagation(); cloneBasket(${basket.id})" class="text-indigo-600 hover:text-indigo-800 text-sm">
-          <i class="fas fa-copy mr-1"></i>Clone
-        </button>
-        <button onclick="event.stopPropagation(); investInBasket(${basket.id})" class="text-green-600 hover:text-green-800 text-sm">
-          <i class="fas fa-shopping-cart mr-1"></i>Invest
-        </button>
+
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <h2 class="font-semibold mb-4">Stocks (${basket.stocks?.length || 0})</h2>
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y">
+            ${(basket.stocks || []).map(stock => `
+              <tr class="hover:bg-gray-50">
+                <td class="px-4 py-3">
+                  <p class="font-medium">${stock.trading_symbol}</p>
+                  <p class="text-xs text-gray-500">${stock.company_name || ''} • ${stock.exchange}</p>
+                </td>
+                <td class="px-4 py-3 text-right">${stock.weight_percentage?.toFixed(2)}%</td>
+                <td class="px-4 py-3 text-right">${stock.last_price ? formatCurrency(stock.last_price) : '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
   `;
 }
 
-async function cloneBasket(basketId) {
-  const name = prompt('Name for your cloned basket:');
-  if (!name) return;
+function renderInvestmentDetail() {
+  const inv = state.selectedInvestment;
+  if (!inv) return '<p>Loading...</p>';
   
-  const res = await api.post(`/baskets/${basketId}/clone`, { name });
-  if (res?.success) {
-    showNotification('Basket cloned!', 'success');
-    await loadDashboardData();
-    viewBasket(res.data.basket_id);
-  }
-}
-
-async function investInBasket(basketId) {
-  await viewBasket(basketId);
-}
-
-function editBasket(basketId) {
-  // TODO: Implement edit modal
-  viewBasket(basketId);
-}
-
-// Charts
-function initializeCharts() {
-  // Performance chart placeholder
-  const ctx = document.getElementById('performanceChart');
-  if (ctx) {
-    new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-        datasets: [{
-          label: 'Portfolio',
-          data: [100, 105, 103, 110, 115, 118],
-          borderColor: '#4F46E5',
-          tension: 0.1
-        }, {
-          label: 'Nifty 50',
-          data: [100, 102, 101, 105, 108, 110],
-          borderColor: '#9CA3AF',
-          tension: 0.1
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { position: 'top' }
-        }
-      }
-    });
-  }
-}
-
-// Utility functions
-function formatCurrency(amount) {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0
-  }).format(amount || 0);
-}
-
-function getThemeClass(theme) {
-  const classes = {
-    'Technology': 'bg-blue-100 text-blue-800',
-    'Banking': 'bg-green-100 text-green-800',
-    'Healthcare': 'bg-red-100 text-red-800',
-    'Consumer': 'bg-purple-100 text-purple-800',
-    'Automobile': 'bg-orange-100 text-orange-800',
-    'Index': 'bg-indigo-100 text-indigo-800',
-    'Dividend': 'bg-yellow-100 text-yellow-800',
-    'Growth': 'bg-pink-100 text-pink-800'
-  };
-  return classes[theme] || 'bg-gray-100 text-gray-800';
-}
-
-function hideModal(modalId) {
-  document.getElementById(modalId).classList.add('hidden');
-  document.getElementById(modalId).classList.remove('flex');
-}
-
-function showNotification(message, type = 'info') {
-  const notification = document.getElementById('notification');
-  const icon = document.getElementById('notificationIcon');
-  const msg = document.getElementById('notificationMessage');
+  const pnl = (inv.current_value || inv.invested_amount) - inv.invested_amount;
+  const pnlPct = inv.invested_amount > 0 ? ((pnl / inv.invested_amount) * 100).toFixed(2) : 0;
   
-  msg.textContent = message;
-  icon.className = `fas ${type === 'success' ? 'fa-check-circle text-green-400' : type === 'error' ? 'fa-exclamation-circle text-red-400' : 'fa-info-circle text-blue-400'}`;
-  
-  notification.classList.remove('translate-y-full');
-  setTimeout(() => notification.classList.add('translate-y-full'), 3000);
+  return `
+    <div class="space-y-6">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-4">
+          <button onclick="setView('investments')" class="text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left"></i>
+          </button>
+          <div>
+            <h1 class="text-2xl font-bold text-gray-900">${inv.basket_name}</h1>
+            <p class="text-gray-500">Invested on ${new Date(inv.invested_at).toLocaleDateString()}</p>
+          </div>
+        </div>
+        <div class="flex space-x-2">
+          <button onclick="rebalanceInvestment(${inv.id})" class="border border-indigo-600 text-indigo-600 px-4 py-2 rounded-lg hover:bg-indigo-50">
+            <i class="fas fa-sync-alt mr-2"></i>Rebalance
+          </button>
+          <button onclick="sellInvestment(${inv.id})" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
+            <i class="fas fa-sign-out-alt mr-2"></i>Sell
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-4 gap-4">
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Invested</p>
+          <p class="text-xl font-bold">${formatCurrency(inv.invested_amount)}</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Current Value</p>
+          <p class="text-xl font-bold">${formatCurrency(inv.current_value)}</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">P&L</p>
+          <p class="text-xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+            ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}
+          </p>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <p class="text-sm text-gray-500">Returns</p>
+          <p class="text-xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+            ${pnl >= 0 ? '+' : ''}${pnlPct}%
+          </p>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <h2 class="font-semibold mb-4">Holdings</h2>
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y">
+            ${(inv.holdings || []).map(h => {
+              const value = h.quantity * (h.current_price || h.average_price);
+              const hPnl = value - (h.quantity * h.average_price);
+              return `
+                <tr class="hover:bg-gray-50">
+                  <td class="px-4 py-3 font-medium">${h.trading_symbol}</td>
+                  <td class="px-4 py-3 text-right">${h.quantity}</td>
+                  <td class="px-4 py-3 text-right">${formatCurrency(h.average_price)}</td>
+                  <td class="px-4 py-3 text-right">${formatCurrency(h.current_price)}</td>
+                  <td class="px-4 py-3 text-right">${formatCurrency(value)}</td>
+                  <td class="px-4 py-3 text-right">
+                    <span class="${hPnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+                      ${hPnl >= 0 ? '+' : ''}${formatCurrency(hPnl)}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right">
+                    <div class="flex items-center justify-end space-x-2">
+                      <span class="text-gray-500">${h.target_weight?.toFixed(1)}%</span>
+                      <span class="${Math.abs(h.actual_weight - h.target_weight) > 5 ? 'text-orange-600' : 'text-green-600'}">
+                        → ${h.actual_weight?.toFixed(1)}%
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // Initialize
-document.addEventListener('DOMContentLoaded', initApp);
+initApp();

@@ -14,7 +14,7 @@ import type {
   SessionData,
   Account
 } from '../types';
-import { successResponse, errorResponse, validateBasketWeights, decrypt } from '../lib/utils';
+import { successResponse, errorResponse, validateBasketWeights, decrypt, calculateEqualWeights } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
 
 const baskets = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -482,6 +482,68 @@ baskets.post('/:id/clone', async (c) => {
   } catch (error) {
     console.error('Clone basket error:', error);
     return c.json(errorResponse('DB_ERROR', 'Failed to clone basket'), 500);
+  }
+});
+
+/**
+ * POST /api/baskets/calculate-weights
+ * Calculate equal weights or recalculate after adjustment
+ */
+baskets.post('/calculate-weights', async (c) => {
+  try {
+    const { stocks, fixed_stock_index, fixed_weight } = await c.req.json<{
+      stocks: Array<{ trading_symbol: string; exchange: string; weight_percentage?: number }>;
+      fixed_stock_index?: number;
+      fixed_weight?: number;
+    }>();
+    
+    if (!stocks || stocks.length === 0) {
+      return c.json(errorResponse('INVALID_INPUT', 'At least one stock is required'), 400);
+    }
+    
+    if (stocks.length > 20) {
+      return c.json(errorResponse('INVALID_INPUT', 'Maximum 20 stocks allowed'), 400);
+    }
+    
+    let result: Array<{ trading_symbol: string; exchange: string; weight_percentage: number }>;
+    
+    if (fixed_stock_index !== undefined && fixed_weight !== undefined) {
+      // Recalculate weights with one stock fixed
+      const totalStocks = stocks.length;
+      const remainingWeight = 100 - fixed_weight;
+      const remainingStocks = totalStocks - 1;
+      const equalWeight = remainingStocks > 0 ? remainingWeight / remainingStocks : 0;
+      
+      result = stocks.map((stock, index) => ({
+        trading_symbol: stock.trading_symbol,
+        exchange: stock.exchange || 'NSE',
+        weight_percentage: index === fixed_stock_index 
+          ? fixed_weight 
+          : parseFloat(equalWeight.toFixed(2))
+      }));
+      
+      // Adjust for rounding errors
+      const totalWeight = result.reduce((sum, s) => sum + s.weight_percentage, 0);
+      if (Math.abs(totalWeight - 100) > 0.01) {
+        const adjustment = 100 - totalWeight;
+        // Find the first non-fixed stock to adjust
+        const adjustIndex = result.findIndex((_, i) => i !== fixed_stock_index);
+        if (adjustIndex !== -1) {
+          result[adjustIndex].weight_percentage = parseFloat((result[adjustIndex].weight_percentage + adjustment).toFixed(2));
+        }
+      }
+    } else {
+      // Calculate equal weights for all stocks
+      result = calculateEqualWeights(stocks);
+    }
+    
+    return c.json(successResponse({
+      stocks: result,
+      total_weight: result.reduce((sum, s) => sum + s.weight_percentage, 0)
+    }));
+  } catch (error) {
+    console.error('Calculate weights error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to calculate weights'), 500);
   }
 });
 

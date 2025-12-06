@@ -1,9 +1,9 @@
 /**
  * Zerodha Kite Connect API Client
- * Handles all interactions with Kite API
+ * Handles all interactions with Kite API including direct order placement
  */
 
-import type { KiteSession, KiteQuote, KiteLTP, KiteHolding, KiteOrder } from '../types';
+import type { KiteSession, KiteQuote, KiteLTP, KiteHolding, KiteOrder, KiteOrderResponse } from '../types';
 
 const KITE_API_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_URL = 'https://kite.zerodha.com/connect/login';
@@ -94,6 +94,24 @@ export class KiteClient {
   }
 
   /**
+   * Download master instruments CSV
+   */
+  async downloadInstruments(): Promise<string> {
+    const response = await fetch(`${KITE_API_BASE}/instruments`, {
+      headers: {
+        'X-Kite-Version': '3',
+        'Authorization': this.getAuthHeader()
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to download instruments: ${response.status}`);
+    }
+
+    return await response.text();
+  }
+
+  /**
    * Get user profile
    */
   async getProfile(): Promise<any> {
@@ -144,9 +162,9 @@ export class KiteClient {
   }
 
   /**
-   * Place a single order
+   * Place a single order directly via API
    */
-  async placeOrder(order: KiteOrder): Promise<{ order_id: string }> {
+  async placeOrder(order: KiteOrder): Promise<KiteOrderResponse> {
     const variety = order.variety || 'regular';
     const body = new URLSearchParams();
     
@@ -161,6 +179,7 @@ export class KiteClient {
     if (order.trigger_price) body.append('trigger_price', order.trigger_price.toString());
     if (order.validity) body.append('validity', order.validity);
     if (order.tag) body.append('tag', order.tag);
+    if (order.disclosed_quantity) body.append('disclosed_quantity', order.disclosed_quantity.toString());
 
     return this.request(`/orders/${variety}`, {
       method: 'POST',
@@ -168,6 +187,60 @@ export class KiteClient {
         'Content-Type': 'application/x-www-form-urlencoded'
       },
       body: body.toString()
+    });
+  }
+
+  /**
+   * Place multiple orders directly via API
+   * Returns array of order results
+   */
+  async placeMultipleOrders(orders: KiteOrder[]): Promise<Array<{ order: KiteOrder; result: KiteOrderResponse | null; error: string | null }>> {
+    const results: Array<{ order: KiteOrder; result: KiteOrderResponse | null; error: string | null }> = [];
+    
+    for (const order of orders) {
+      try {
+        const result = await this.placeOrder(order);
+        results.push({ order, result, error: null });
+      } catch (error) {
+        results.push({ order, result: null, error: (error as Error).message });
+      }
+      
+      // Add small delay between orders to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    return results;
+  }
+
+  /**
+   * Modify an existing order
+   */
+  async modifyOrder(orderId: string, order: Partial<KiteOrder>): Promise<KiteOrderResponse> {
+    const variety = order.variety || 'regular';
+    const body = new URLSearchParams();
+    
+    if (order.order_type) body.append('order_type', order.order_type);
+    if (order.quantity) body.append('quantity', order.quantity.toString());
+    if (order.price) body.append('price', order.price.toString());
+    if (order.trigger_price) body.append('trigger_price', order.trigger_price.toString());
+    if (order.validity) body.append('validity', order.validity);
+    if (order.disclosed_quantity) body.append('disclosed_quantity', order.disclosed_quantity.toString());
+
+    return this.request(`/orders/${variety}/${orderId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+  }
+
+  /**
+   * Cancel an order
+   */
+  async cancelOrder(orderId: string, variety: string = 'regular'): Promise<KiteOrderResponse> {
+    return this.request(`/orders/${variety}/${orderId}`, {
+      method: 'DELETE'
     });
   }
 
@@ -186,6 +259,16 @@ export class KiteClient {
   }
 
   /**
+   * Get trades for an order
+   */
+  async getTrades(orderId?: string): Promise<any[]> {
+    if (orderId) {
+      return this.request(`/orders/${orderId}/trades`);
+    }
+    return this.request('/trades');
+  }
+
+  /**
    * Get user margins
    */
   async getMargins(): Promise<any> {
@@ -201,7 +284,7 @@ export class KiteClient {
   }
 
   /**
-   * Generate basket order data for offsite execution
+   * Generate basket order data for offsite execution (legacy method)
    * Returns form data to be POSTed to Kite
    */
   generateBasketOrderData(orders: KiteOrder[]): { url: string; formData: { api_key: string; data: string } } {
@@ -352,6 +435,13 @@ export class KiteClient {
    */
   getApiKey(): string {
     return this.apiKey;
+  }
+
+  /**
+   * Check if client has access token
+   */
+  hasAccessToken(): boolean {
+    return !!this.accessToken;
   }
 }
 
