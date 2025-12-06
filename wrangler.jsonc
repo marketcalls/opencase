@@ -14,7 +14,8 @@
   "kv_namespaces": [
     {
       "binding": "KV",
-      "id": "opencase-kv"
+      "id": "opencase-kv",
+      "preview_id": "opencase-kv-preview"
     }
   ],
   "vars": {

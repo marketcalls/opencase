@@ -64,15 +64,23 @@ user.get('/status', async (c) => {
     const sessionId = c.req.header('X-Session-ID');
     let currentUser = null;
     
+    console.log('[User Status] Session ID from header:', sessionId ? `${sessionId.substring(0, 8)}...` : 'none');
+    
     if (sessionId) {
       const sessionData = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
-      if (sessionData && sessionData.expires_at > Date.now()) {
-        currentUser = {
-          id: sessionData.user_id,
-          email: sessionData.email,
-          name: sessionData.name,
-          is_admin: sessionData.is_admin
-        };
+      console.log('[User Status] Session data from KV:', sessionData ? 'found' : 'not found');
+      
+      if (sessionData) {
+        console.log('[User Status] Session expires_at:', sessionData.expires_at, 'now:', Date.now(), 'valid:', sessionData.expires_at > Date.now());
+        
+        if (sessionData.expires_at > Date.now()) {
+          currentUser = {
+            id: sessionData.user_id,
+            email: sessionData.email,
+            name: sessionData.name,
+            is_admin: sessionData.is_admin
+          };
+        }
       }
     }
     
@@ -82,6 +90,7 @@ user.get('/status', async (c) => {
       user: currentUser
     }));
   } catch (error) {
+    console.error('[User Status] Error:', error);
     // Table might not exist yet
     return c.json(successResponse({
       needs_setup: true,
@@ -156,9 +165,14 @@ user.post('/signup', async (c) => {
       expires_at: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
     };
     
+    console.log('[Signup] Storing session in KV with key:', `user:${sessionId}`);
     await c.env.KV.put(`user:${sessionId}`, JSON.stringify(sessionData), {
       expirationTtl: 604800 // 7 days
     });
+    
+    // Verify the session was stored
+    const verifySession = await c.env.KV.get(`user:${sessionId}`, 'json');
+    console.log('[Signup] Session verification:', verifySession ? 'stored successfully' : 'FAILED TO STORE');
     
     return c.json(successResponse({
       session_id: sessionId,
@@ -221,9 +235,14 @@ user.post('/login', async (c) => {
       expires_at: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
     };
     
+    console.log('[Login] Storing session in KV with key:', `user:${sessionId}`);
     await c.env.KV.put(`user:${sessionId}`, JSON.stringify(sessionData), {
       expirationTtl: 604800 // 7 days
     });
+    
+    // Verify the session was stored
+    const verifySession = await c.env.KV.get(`user:${sessionId}`, 'json');
+    console.log('[Login] Session verification:', verifySession ? 'stored successfully' : 'FAILED TO STORE');
     
     return c.json(successResponse({
       session_id: sessionId,
