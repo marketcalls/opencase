@@ -1666,24 +1666,53 @@ async function handleCreateBasket(e) {
     return;
   }
   
+  const basketName = document.getElementById('basketName').value;
+  if (!basketName || basketName.trim() === '') {
+    showNotification('Please enter a basket name', 'warning');
+    return;
+  }
+  
   const data = {
-    name: document.getElementById('basketName').value,
-    description: document.getElementById('basketDescription').value,
-    theme: document.getElementById('basketTheme').value,
+    name: basketName.trim(),
+    description: document.getElementById('basketDescription').value || '',
+    theme: document.getElementById('basketTheme').value || '',
     stocks: state.basketStocks.map(s => ({
-      trading_symbol: s.trading_symbol,
-      exchange: s.exchange,
-      weight_percentage: s.weight_percentage
+      trading_symbol: s.trading_symbol || s.zerodha_trading_symbol || s.symbol,
+      exchange: s.exchange || 'NSE',
+      weight_percentage: parseFloat(s.weight_percentage.toFixed(2))
     }))
   };
   
-  const res = await api.post('/baskets', data);
-  if (res?.success) {
-    showNotification('Basket created successfully!', 'success');
-    await loadDashboardData();
-    setView('baskets');
-  } else {
-    showNotification(res?.error?.message || 'Failed to create basket', 'error');
+  console.log('Creating basket:', data); // Debug log
+  
+  // Disable button to prevent double submission
+  const submitBtn = document.querySelector('#createBasketForm button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
+  }
+  
+  try {
+    const res = await api.post('/baskets', data);
+    console.log('Create basket response:', res); // Debug log
+    
+    if (res?.success) {
+      showNotification('Basket created successfully!', 'success');
+      state.basketStocks = []; // Clear stocks
+      await loadDashboardData();
+      setView('baskets');
+    } else {
+      showNotification(res?.error?.message || 'Failed to create basket', 'error');
+    }
+  } catch (err) {
+    console.error('Create basket error:', err);
+    showNotification('Failed to create basket. Please try again.', 'error');
+  } finally {
+    // Re-enable button
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<i class="fas fa-save mr-2"></i>Create Basket';
+    }
   }
 }
 
