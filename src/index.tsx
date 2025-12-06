@@ -173,8 +173,8 @@ app.get('/', async (c) => {
                     <div class="w-16 h-16 bg-pink-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <i class="fas fa-users text-2xl text-pink-600"></i>
                     </div>
-                    <h3 class="text-xl font-semibold mb-2">Family Management</h3>
-                    <p class="text-gray-600">Manage multiple Zerodha accounts for your family.</p>
+                    <h3 class="text-xl font-semibold mb-2">Multi-Broker Support</h3>
+                    <p class="text-gray-600">Connect Zerodha, Angel One, and manage multiple accounts.</p>
                 </div>
             </div>
         </div>
@@ -195,34 +195,93 @@ app.get('/', async (c) => {
         </div>
     </section>
 
-    <!-- Setup Modal -->
+    <!-- Setup Modal - Multi-Broker Support -->
     <div id="setupModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4">
+        <div class="bg-white rounded-xl p-8 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-bold">Setup Kite API</h3>
+                <h3 class="text-xl font-bold">Setup Broker API</h3>
                 <button onclick="hideSetupModal()" class="text-gray-400 hover:text-gray-600">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
-            <p class="text-gray-600 mb-6">
-                Get your API credentials from 
-                <a href="https://developers.kite.trade" target="_blank" class="text-indigo-600 hover:underline">Kite Connect Developer Portal</a>
-            </p>
+            
             <form id="setupForm" onsubmit="handleSetup(event)">
+                <!-- Broker Selection -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-3">Select Broker</label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <label class="broker-option cursor-pointer">
+                            <input type="radio" name="broker_type" value="zerodha" checked onchange="updateBrokerForm()" class="hidden">
+                            <div class="border-2 rounded-lg p-4 text-center transition broker-card border-indigo-500 bg-indigo-50">
+                                <img src="https://kite.zerodha.com/static/images/kite-logo.svg" alt="Zerodha" class="h-8 mx-auto mb-2" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+                                <i class="fas fa-chart-line text-2xl text-indigo-600 hidden mb-2"></i>
+                                <span class="font-semibold text-gray-900">Zerodha Kite</span>
+                            </div>
+                        </label>
+                        <label class="broker-option cursor-pointer">
+                            <input type="radio" name="broker_type" value="angelone" onchange="updateBrokerForm()" class="hidden">
+                            <div class="border-2 rounded-lg p-4 text-center transition broker-card border-gray-200 hover:border-indigo-300">
+                                <img src="https://www.angelone.in/assets/images/Angel-one-Logo.svg" alt="Angel One" class="h-8 mx-auto mb-2" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+                                <i class="fas fa-chart-bar text-2xl text-orange-600 hidden mb-2"></i>
+                                <span class="font-semibold text-gray-900">Angel One</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Broker-specific help text -->
+                <div id="brokerHelp" class="bg-blue-50 rounded-lg p-4 mb-6">
+                    <p class="text-sm text-blue-800">
+                        <i class="fas fa-info-circle mr-2"></i>
+                        <span id="brokerHelpText">Get your API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Developer Portal</a></span>
+                    </p>
+                </div>
+                
+                <!-- API Key -->
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
-                    <input type="text" id="apiKey" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your Kite API Key">
+                    <input type="text" id="apiKey" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your API Key">
                 </div>
-                <div class="mb-6">
+                
+                <!-- API Secret -->
+                <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">API Secret</label>
-                    <input type="password" id="apiSecret" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your Kite API Secret">
+                    <input type="password" id="apiSecret" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your API Secret">
                 </div>
-                <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition">
+                
+                <!-- AngelOne-specific fields -->
+                <div id="angeloneFields" class="hidden">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Client Code</label>
+                        <input type="text" id="clientCode" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your Angel One Client Code">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">MPIN (Optional)</label>
+                        <input type="password" id="mpin" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" placeholder="Your 4-digit MPIN">
+                        <p class="text-xs text-gray-500 mt-1">Required for some operations. You can add it later.</p>
+                    </div>
+                </div>
+                
+                <button type="submit" id="setupSubmitBtn" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition">
                     <i class="fas fa-save mr-2"></i>Save Configuration
                 </button>
             </form>
         </div>
     </div>
+    
+    <style>
+        .broker-option input:checked + .broker-card {
+            border-color: #6366f1;
+            background-color: #eef2ff;
+        }
+        .broker-option input:not(:checked) + .broker-card {
+            border-color: #e5e7eb;
+            background-color: white;
+        }
+        .broker-option input:not(:checked) + .broker-card:hover {
+            border-color: #a5b4fc;
+        }
+    </style>
 
     <!-- Footer -->
     <footer class="bg-gray-900 text-white py-8">
@@ -264,6 +323,7 @@ app.get('/', async (c) => {
         function showSetupModal() {
             document.getElementById('setupModal').classList.remove('hidden');
             document.getElementById('setupModal').classList.add('flex');
+            updateBrokerForm(); // Initialize form
         }
         
         function hideSetupModal() {
@@ -271,29 +331,90 @@ app.get('/', async (c) => {
             document.getElementById('setupModal').classList.remove('flex');
         }
         
+        function updateBrokerForm() {
+            const brokerType = document.querySelector('input[name="broker_type"]:checked').value;
+            const angeloneFields = document.getElementById('angeloneFields');
+            const brokerHelpText = document.getElementById('brokerHelpText');
+            const clientCodeInput = document.getElementById('clientCode');
+            
+            // Update visual selection
+            document.querySelectorAll('.broker-card').forEach(card => {
+                card.classList.remove('border-indigo-500', 'bg-indigo-50');
+                card.classList.add('border-gray-200');
+            });
+            document.querySelector('input[name="broker_type"]:checked + .broker-card').classList.add('border-indigo-500', 'bg-indigo-50');
+            document.querySelector('input[name="broker_type"]:checked + .broker-card').classList.remove('border-gray-200');
+            
+            if (brokerType === 'zerodha') {
+                angeloneFields.classList.add('hidden');
+                clientCodeInput.removeAttribute('required');
+                brokerHelpText.innerHTML = 'Get your API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Developer Portal</a>';
+            } else if (brokerType === 'angelone') {
+                angeloneFields.classList.remove('hidden');
+                clientCodeInput.setAttribute('required', 'required');
+                brokerHelpText.innerHTML = 'Get your API credentials from <a href="https://smartapi.angelbroking.com/" target="_blank" class="underline font-medium">Angel One Smart API Portal</a>';
+            }
+        }
+        
         async function handleSetup(e) {
             e.preventDefault();
+            const brokerType = document.querySelector('input[name="broker_type"]:checked').value;
             const apiKey = document.getElementById('apiKey').value;
             const apiSecret = document.getElementById('apiSecret').value;
+            
+            const payload = {
+                broker_type: brokerType,
+                api_key: apiKey,
+                api_secret: apiSecret
+            };
+            
+            // Add AngelOne-specific fields
+            if (brokerType === 'angelone') {
+                payload.client_code = document.getElementById('clientCode').value;
+                const mpin = document.getElementById('mpin').value;
+                if (mpin) payload.mpin = mpin;
+            }
+            
+            const submitBtn = document.getElementById('setupSubmitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Saving...';
             
             try {
                 const res = await fetch('/api/setup/configure', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ kite_api_key: apiKey, kite_api_secret: apiSecret })
+                    body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 
                 if (data.success) {
-                    alert('Configuration saved! You can now login with Zerodha.');
                     hideSetupModal();
-                    window.location.reload();
+                    showNotification('Configuration saved! You can now login.', 'success');
+                    setTimeout(() => window.location.reload(), 1500);
                 } else {
-                    alert('Error: ' + (data.error?.message || 'Failed to save'));
+                    showNotification('Error: ' + (data.error?.message || 'Failed to save'), 'error');
                 }
             } catch (e) {
-                alert('Error saving configuration');
+                showNotification('Error saving configuration', 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-save mr-2"></i>Save Configuration';
             }
+        }
+        
+        function showNotification(message, type = 'info') {
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                info: 'bg-blue-500',
+                warning: 'bg-yellow-500'
+            };
+            const notification = document.createElement('div');
+            notification.className = 'fixed top-4 right-4 ' + colors[type] + ' text-white px-6 py-3 rounded-lg shadow-lg z-50';
+            const icon = type === 'success' ? 'check' : type === 'error' ? 'exclamation-circle' : 'info-circle';
+            notification.innerHTML = '<i class="fas fa-' + icon + ' mr-2"></i>' + message;
+            document.body.appendChild(notification);
+            setTimeout(function() { notification.remove(); }, 4000);
         }
         
         // Load templates

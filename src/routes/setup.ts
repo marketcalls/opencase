@@ -1,14 +1,50 @@
 /**
  * Setup Routes
  * Zero-config API key setup, credential management
+ * Supports multiple brokers: Zerodha, AngelOne
  */
 
 import { Hono } from 'hono';
-import type { Bindings, Variables, SetupRequest, Account, SessionData } from '../types';
+import type { Bindings, Variables, Account, SessionData, BrokerType } from '../types';
 import { successResponse, errorResponse, encrypt, decrypt } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
+import { 
+  createBrokerClient, 
+  getSupportedBrokers, 
+  validateBrokerCredentials,
+  getBrokerDisplayName,
+  getBrokerRequirements 
+} from '../brokers';
+
+// Extended setup request supporting multiple brokers
+interface SetupRequest {
+  broker_type: BrokerType;
+  api_key: string;
+  api_secret: string;
+  client_code?: string;  // For AngelOne
+  mpin?: string;         // For AngelOne
+}
 
 const setup = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+
+/**
+ * GET /api/setup/brokers
+ * Get list of supported brokers
+ */
+setup.get('/brokers', (c) => {
+  const brokers = getSupportedBrokers();
+  return c.json(successResponse(brokers));
+});
+
+/**
+ * GET /api/setup/broker-requirements/:type
+ * Get broker-specific requirements
+ */
+setup.get('/broker-requirements/:type', (c) => {
+  const brokerType = c.req.param('type') as BrokerType;
+  const requirements = getBrokerRequirements(brokerType);
+  return c.json(successResponse(requirements));
+});
 
 /**
  * GET /api/setup/status
@@ -16,9 +52,17 @@ const setup = new Hono<{ Bindings: Bindings; Variables: Variables }>();
  */
 setup.get('/status', async (c) => {
   try {
-    // Check for API key in database (not env vars - zero config)
-    const apiKeyConfig = await c.env.DB.prepare(
+    // Check for any broker API key in database
+    const zerodhaKey = await c.env.DB.prepare(
       "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+    ).first<{ config_value: string }>();
+    
+    const angeloneKey = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'angelone_api_key'"
+    ).first<{ config_value: string }>();
+    
+    const defaultBroker = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'default_broker'"
     ).first<{ config_value: string }>();
     
     const accountsCount = await c.env.DB.prepare(
@@ -34,81 +78,203 @@ setup.get('/status', async (c) => {
       "SELECT config_value FROM app_config WHERE config_key = 'instruments_last_download'"
     ).first<{ config_value: string }>();
     
-    const hasApiKey = !!apiKeyConfig?.config_value;
+    const hasZerodha = !!zerodhaKey?.config_value;
+    const hasAngelone = !!angeloneKey?.config_value;
+    const hasAnyBroker = hasZerodha || hasAngelone;
     const hasAccounts = (accountsCount?.count || 0) > 0;
     const hasInstruments = (instrumentsCount?.count || 0) > 0;
     
     return c.json(successResponse({
-      is_configured: hasApiKey,
+      is_configured: hasAnyBroker,
+      configured_brokers: {
+        zerodha: hasZerodha,
+        angelone: hasAngelone
+      },
+      default_broker: defaultBroker?.config_value || (hasZerodha ? 'zerodha' : hasAngelone ? 'angelone' : null),
       has_accounts: hasAccounts,
       has_instruments: hasInstruments,
       instruments_count: instrumentsCount?.count || 0,
       instruments_last_download: lastDownload?.config_value || null,
-      needs_setup: !hasApiKey,
-      needs_instruments_download: !hasInstruments
+      needs_setup: !hasAnyBroker,
+      needs_instruments_download: !hasInstruments,
+      supported_brokers: getSupportedBrokers()
     }));
   } catch (error) {
     console.error('Setup status error:', error);
     return c.json(successResponse({
       is_configured: false,
+      configured_brokers: { zerodha: false, angelone: false },
+      default_broker: null,
       has_accounts: false,
       has_instruments: false,
       instruments_count: 0,
       instruments_last_download: null,
       needs_setup: true,
-      needs_instruments_download: true
+      needs_instruments_download: true,
+      supported_brokers: getSupportedBrokers()
     }));
   }
 });
 
 /**
  * POST /api/setup/configure
- * Configure Kite API credentials (initial setup - zero config)
+ * Configure broker API credentials (supports Zerodha and AngelOne)
  */
 setup.post('/configure', async (c) => {
   try {
-    const { kite_api_key, kite_api_secret } = await c.req.json<SetupRequest>();
+    const body = await c.req.json<SetupRequest | { kite_api_key: string; kite_api_secret: string }>();
     
-    if (!kite_api_key || !kite_api_secret) {
+    // Support both old format (kite_api_key) and new format (broker_type + api_key)
+    let brokerType: BrokerType;
+    let apiKey: string;
+    let apiSecret: string;
+    let clientCode: string | undefined;
+    let mpin: string | undefined;
+    
+    if ('broker_type' in body) {
+      brokerType = body.broker_type;
+      apiKey = body.api_key;
+      apiSecret = body.api_secret;
+      clientCode = body.client_code;
+      mpin = body.mpin;
+    } else {
+      // Legacy format - assume Zerodha
+      brokerType = 'zerodha';
+      apiKey = body.kite_api_key;
+      apiSecret = body.kite_api_secret;
+    }
+    
+    if (!apiKey || !apiSecret) {
       return c.json(errorResponse('INVALID_INPUT', 'API key and secret are required'), 400);
     }
     
-    // Validate credentials by attempting to get login URL
-    try {
-      const kite = new KiteClient(kite_api_key, kite_api_secret);
-      kite.getLoginUrl(); // This will throw if API key format is invalid
-    } catch (error) {
-      return c.json(errorResponse('INVALID_CREDENTIALS', 'Invalid API key format'), 400);
+    // Validate credentials format
+    const validation = validateBrokerCredentials(brokerType, { apiKey, apiSecret });
+    if (!validation.valid) {
+      return c.json(errorResponse('INVALID_CREDENTIALS', validation.errors.join(', ')), 400);
+    }
+    
+    // Additional validation for AngelOne
+    if (brokerType === 'angelone') {
+      if (!clientCode) {
+        return c.json(errorResponse('INVALID_INPUT', 'Client Code is required for Angel One'), 400);
+      }
+    }
+    
+    // Validate Zerodha credentials by attempting to get login URL
+    if (brokerType === 'zerodha') {
+      try {
+        const kite = new KiteClient(apiKey, apiSecret);
+        kite.getLoginUrl();
+      } catch (error) {
+        return c.json(errorResponse('INVALID_CREDENTIALS', 'Invalid API key format'), 400);
+      }
     }
     
     // Use a default encryption key for zero-config setup
     const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
     
-    // Encrypt and store credentials
-    const encryptedKey = await encrypt(kite_api_key, encryptionKey);
-    const encryptedSecret = await encrypt(kite_api_secret, encryptionKey);
+    // Encrypt credentials
+    const encryptedKey = await encrypt(apiKey, encryptionKey);
+    const encryptedSecret = await encrypt(apiSecret, encryptionKey);
     
-    // Upsert API key
-    await c.env.DB.prepare(`
-      INSERT INTO app_config (config_key, config_value, is_encrypted)
-      VALUES ('kite_api_key', ?, 1)
-      ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
-    `).bind(encryptedKey, encryptedKey).run();
+    // Store credentials based on broker type
+    if (brokerType === 'zerodha') {
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('kite_api_key', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedKey, encryptedKey).run();
+      
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('kite_api_secret', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedSecret, encryptedSecret).run();
+    } else if (brokerType === 'angelone') {
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('angelone_api_key', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedKey, encryptedKey).run();
+      
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('angelone_api_secret', ?, 1)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(encryptedSecret, encryptedSecret).run();
+      
+      // Store client code (encrypted)
+      if (clientCode) {
+        const encryptedClientCode = await encrypt(clientCode, encryptionKey);
+        await c.env.DB.prepare(`
+          INSERT INTO app_config (config_key, config_value, is_encrypted)
+          VALUES ('angelone_client_code', ?, 1)
+          ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+        `).bind(encryptedClientCode, encryptedClientCode).run();
+      }
+      
+      // Store MPIN (encrypted) if provided
+      if (mpin) {
+        const encryptedMpin = await encrypt(mpin, encryptionKey);
+        await c.env.DB.prepare(`
+          INSERT INTO app_config (config_key, config_value, is_encrypted)
+          VALUES ('angelone_mpin', ?, 1)
+          ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+        `).bind(encryptedMpin, encryptedMpin).run();
+      }
+    }
     
-    // Upsert API secret
-    await c.env.DB.prepare(`
-      INSERT INTO app_config (config_key, config_value, is_encrypted)
-      VALUES ('kite_api_secret', ?, 1)
-      ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
-    `).bind(encryptedSecret, encryptedSecret).run();
+    // Set as default broker if no default exists
+    const existingDefault = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'default_broker'"
+    ).first<{ config_value: string }>();
     
+    if (!existingDefault?.config_value) {
+      await c.env.DB.prepare(`
+        INSERT INTO app_config (config_key, config_value, is_encrypted)
+        VALUES ('default_broker', ?, 0)
+        ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+      `).bind(brokerType, brokerType).run();
+    }
+    
+    const brokerName = getBrokerDisplayName(brokerType);
     return c.json(successResponse({
       configured: true,
-      message: 'API credentials configured successfully. You can now login with Zerodha.'
+      broker_type: brokerType,
+      message: `${brokerName} credentials configured successfully. You can now login.`
     }));
   } catch (error) {
     console.error('Configure error:', error);
     return c.json(errorResponse('CONFIG_ERROR', 'Failed to save configuration'), 500);
+  }
+});
+
+/**
+ * PUT /api/setup/default-broker
+ * Set the default broker
+ */
+setup.put('/default-broker', async (c) => {
+  try {
+    const { broker_type } = await c.req.json<{ broker_type: BrokerType }>();
+    
+    if (!broker_type || !['zerodha', 'angelone'].includes(broker_type)) {
+      return c.json(errorResponse('INVALID_INPUT', 'Valid broker type required'), 400);
+    }
+    
+    await c.env.DB.prepare(`
+      INSERT INTO app_config (config_key, config_value, is_encrypted)
+      VALUES ('default_broker', ?, 0)
+      ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+    `).bind(broker_type, broker_type).run();
+    
+    return c.json(successResponse({
+      default_broker: broker_type,
+      message: `Default broker set to ${getBrokerDisplayName(broker_type)}`
+    }));
+  } catch (error) {
+    console.error('Set default broker error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to set default broker'), 500);
   }
 });
 
