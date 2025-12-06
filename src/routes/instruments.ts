@@ -76,28 +76,55 @@ async function getAuthenticatedKiteClient(c: any, userId: number): Promise<KiteC
  */
 instruments.get('/status', async (c) => {
   try {
-    const lastDownload = await c.env.DB.prepare(
+    // Get Zerodha download timestamp
+    const zerodhaLastDownload = await c.env.DB.prepare(
       "SELECT config_value FROM app_config WHERE config_key = 'instruments_last_download'"
     ).first<{ config_value: string }>();
-    
+
+    // Get AngelOne download timestamp
+    const angeloneLastDownload = await c.env.DB.prepare(
+      "SELECT config_value FROM app_config WHERE config_key = 'angelone_last_download'"
+    ).first<{ config_value: string }>();
+
     const count = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM master_instruments"
     ).first<{ count: number }>();
-    
+
     const nseCount = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM master_instruments WHERE exchange = 'NSE'"
     ).first<{ count: number }>();
-    
+
     const bseCount = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM master_instruments WHERE exchange = 'BSE'"
     ).first<{ count: number }>();
-    
+
+    // Count instruments with Zerodha tokens
+    const zerodhaCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM master_instruments WHERE zerodha_token IS NOT NULL"
+    ).first<{ count: number }>();
+
+    // Count instruments with AngelOne tokens
+    const angeloneCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM master_instruments WHERE angelone_token IS NOT NULL"
+    ).first<{ count: number }>();
+
+    // Count instruments with both broker tokens
+    const bothCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM master_instruments WHERE zerodha_token IS NOT NULL AND angelone_token IS NOT NULL"
+    ).first<{ count: number }>();
+
     return c.json(successResponse({
-      last_download: lastDownload?.config_value || null,
+      last_download: zerodhaLastDownload?.config_value || null,
+      zerodha_last_download: zerodhaLastDownload?.config_value || null,
+      angelone_last_download: angeloneLastDownload?.config_value || null,
       total_instruments: count?.count || 0,
       nse_instruments: nseCount?.count || 0,
       bse_instruments: bseCount?.count || 0,
-      needs_download: !lastDownload?.config_value || (count?.count || 0) === 0
+      zerodha_instruments: zerodhaCount?.count || 0,
+      angelone_instruments: angeloneCount?.count || 0,
+      both_brokers: bothCount?.count || 0,
+      needs_download: !zerodhaLastDownload?.config_value || (count?.count || 0) === 0,
+      needs_angelone_download: !angeloneLastDownload?.config_value
     }));
   } catch (error) {
     console.error('Instruments status error:', error);
@@ -153,7 +180,7 @@ instruments.post('/download', async (c) => {
     
     // Process and insert instruments (only NSE/BSE equity)
     let inserted = 0;
-    const batchSize = 100;
+    const batchSize = 500; // Increased batch size since we use D1 batch API
     let batch: any[] = [];
     
     for (let i = 1; i < lines.length; i++) {
@@ -221,6 +248,155 @@ instruments.post('/download', async (c) => {
 });
 
 /**
+ * POST /api/instruments/download-angelone
+ * Download master instruments from AngelOne API (no auth required, public JSON)
+ */
+instruments.post('/download-angelone', async (c) => {
+  const sessionId = c.req.header('X-Session-ID');
+
+  if (!sessionId) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
+  }
+
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
+
+  if (!userSession || userSession.expires_at < Date.now()) {
+    return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
+  }
+
+  try {
+    // AngelOne provides public JSON file with all instruments
+    const angelOneUrl = 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
+
+    console.log('[AngelOne] Downloading instruments from:', angelOneUrl);
+    const response = await fetch(angelOneUrl);
+
+    if (!response.ok) {
+      return c.json(errorResponse('DOWNLOAD_FAILED', `Failed to download: ${response.status}`), 500);
+    }
+
+    const jsonData = await response.json() as any[];
+    console.log('[AngelOne] Downloaded', jsonData.length, 'total instruments');
+
+    if (!jsonData || jsonData.length === 0) {
+      return c.json(errorResponse('DOWNLOAD_FAILED', 'Empty response from AngelOne'), 500);
+    }
+
+    // Filter for NSE and BSE equity instruments only
+    const equityInstruments = jsonData.filter((inst: any) => {
+      const exchange = inst.exch_seg;
+      const instrumentType = inst.instrumenttype;
+
+      // Only include NSE/BSE equity and indices
+      return (exchange === 'NSE' || exchange === 'BSE') &&
+             (instrumentType === 'EQ' || instrumentType === '' || instrumentType === 'AMXIDX');
+    });
+
+    console.log('[AngelOne] Filtered to', equityInstruments.length, 'NSE/BSE equity instruments');
+
+    // Process and insert instruments in batches
+    let inserted = 0;
+    const batchSize = 500;
+    let batch: any[] = [];
+
+    for (const inst of equityInstruments) {
+      // Clean symbol: remove -EQ, -BE, -MF, -SG suffixes
+      const symbol = (inst.symbol || '').replace(/-EQ$|-BE$|-MF$|-SG$/, '');
+
+      if (!symbol || !inst.token) continue;
+
+      batch.push({
+        symbol: symbol,
+        name: inst.name || '',
+        exchange: inst.exch_seg,
+        instrument_type: inst.instrumenttype === 'AMXIDX' ? 'INDEX' : (inst.instrumenttype || 'EQ'),
+        segment: inst.exch_seg,
+        tick_size: (parseFloat(inst.tick_size) || 5) / 100, // Divide by 100
+        lot_size: parseInt(inst.lotsize) || 1,
+        expiry: inst.expiry || null,
+        strike: inst.strike ? parseFloat(inst.strike) / 100 : null, // Divide by 100
+        angelone_token: inst.token,
+        angelone_trading_symbol: inst.symbol
+      });
+
+      if (batch.length >= batchSize) {
+        await insertAngelOneInstrumentsBatch(c.env.DB, batch);
+        inserted += batch.length;
+        batch = [];
+      }
+    }
+
+    // Insert remaining batch
+    if (batch.length > 0) {
+      await insertAngelOneInstrumentsBatch(c.env.DB, batch);
+      inserted += batch.length;
+    }
+
+    // Update last download timestamp
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(`
+      INSERT INTO app_config (config_key, config_value, is_encrypted)
+      VALUES ('angelone_last_download', ?, 0)
+      ON CONFLICT(config_key) DO UPDATE SET config_value = ?, updated_at = datetime('now')
+    `).bind(now, now).run();
+
+    return c.json(successResponse({
+      downloaded: inserted,
+      timestamp: now,
+      message: `Successfully downloaded ${inserted} AngelOne instruments`
+    }));
+  } catch (error) {
+    console.error('AngelOne download error:', error);
+    return c.json(errorResponse('DOWNLOAD_ERROR', `Failed to download: ${(error as Error).message}`), 500);
+  }
+});
+
+/**
+ * Helper to insert AngelOne instruments in batch
+ * Updates existing rows with angelone_token or inserts new rows
+ */
+async function insertAngelOneInstrumentsBatch(db: D1Database, instruments: any[]): Promise<void> {
+  if (instruments.length === 0) return;
+
+  // Build batch of prepared statements
+  const statements = instruments.map(inst => {
+    return db.prepare(`
+      INSERT INTO master_instruments (
+        symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
+        angelone_token, angelone_trading_symbol, source, last_downloaded_from
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'angelone', 'angelone')
+      ON CONFLICT(symbol, exchange, instrument_type, expiry, strike) DO UPDATE SET
+        name = COALESCE(master_instruments.name, excluded.name),
+        segment = COALESCE(master_instruments.segment, excluded.segment),
+        tick_size = COALESCE(master_instruments.tick_size, excluded.tick_size),
+        lot_size = COALESCE(master_instruments.lot_size, excluded.lot_size),
+        angelone_token = excluded.angelone_token,
+        angelone_trading_symbol = excluded.angelone_trading_symbol,
+        last_downloaded_from = CASE
+          WHEN master_instruments.zerodha_token IS NOT NULL THEN 'both'
+          ELSE 'angelone'
+        END,
+        updated_at = datetime('now')
+    `).bind(
+      inst.symbol,
+      inst.name,
+      inst.exchange,
+      inst.instrument_type,
+      inst.segment,
+      inst.tick_size,
+      inst.lot_size,
+      inst.expiry,
+      inst.strike,
+      inst.angelone_token,
+      inst.angelone_trading_symbol
+    );
+  });
+
+  // Execute all statements in a single batch (single round trip)
+  await db.batch(statements);
+}
+
+/**
  * Helper to parse CSV line (handles quoted values)
  */
 function parseCSVLine(line: string): string[] {
@@ -247,14 +423,17 @@ function parseCSVLine(line: string): string[] {
 
 /**
  * Helper to insert instruments in batch (Unified schema)
- * Uses zerodha_token, zerodha_exchange_token, zerodha_trading_symbol columns
+ * Uses D1 batch API for much faster inserts
  */
 async function insertInstrumentsBatch(db: D1Database, instruments: any[]): Promise<void> {
-  for (const inst of instruments) {
+  if (instruments.length === 0) return;
+
+  // Build batch of prepared statements
+  const statements = instruments.map(inst => {
     // Extract base symbol from trading_symbol (e.g., "RELIANCE" from "RELIANCE" or "RELIANCE-EQ")
     const symbol = inst.trading_symbol.replace(/-EQ$/, '');
-    
-    await db.prepare(`
+
+    return db.prepare(`
       INSERT INTO master_instruments (
         symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
         zerodha_token, zerodha_exchange_token, zerodha_trading_symbol, source, last_downloaded_from
@@ -283,8 +462,11 @@ async function insertInstrumentsBatch(db: D1Database, instruments: any[]): Promi
       inst.instrument_token,
       inst.exchange_token,
       inst.trading_symbol
-    ).run();
-  }
+    );
+  });
+
+  // Execute all statements in a single batch (single round trip)
+  await db.batch(statements);
 }
 
 /**

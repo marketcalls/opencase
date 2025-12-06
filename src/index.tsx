@@ -1293,4 +1293,408 @@ app.get('/dashboard', async (c) => {
   `);
 });
 
+// Master Contracts Page
+app.get('/contracts', async (c) => {
+  return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Master Contracts - OpenCase</title>
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+      .stat-card { transition: transform 0.2s, box-shadow 0.2s; }
+      .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+      .download-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+      .progress-bar { transition: width 0.3s ease; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16 items-center">
+                <div class="flex items-center space-x-4">
+                    <a href="/dashboard" class="flex items-center space-x-2">
+                        <img src="/static/logo.svg" alt="OpenCase" class="w-10 h-10">
+                        <span class="text-xl font-bold text-gray-900">OpenCase</span>
+                    </a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/dashboard" class="text-gray-600 hover:text-indigo-600">
+                        <i class="fas fa-chart-pie mr-1"></i> Dashboard
+                    </a>
+                    <a href="/accounts" class="text-gray-600 hover:text-indigo-600">
+                        <i class="fas fa-wallet mr-1"></i> Accounts
+                    </a>
+                    <button onclick="handleLogout()" class="text-gray-500 hover:text-gray-700">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-6xl mx-auto p-6">
+        <div class="mb-6">
+            <h1 class="text-2xl font-bold text-gray-900">Master Contracts</h1>
+            <p class="text-gray-600">Download and manage instrument data from brokers</p>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div class="stat-card bg-white rounded-xl p-4 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">Total Instruments</p>
+                        <p id="totalCount" class="text-2xl font-bold text-gray-900">-</p>
+                    </div>
+                    <div class="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center">
+                        <i class="fas fa-database text-indigo-600"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-card bg-white rounded-xl p-4 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">NSE Stocks</p>
+                        <p id="nseCount" class="text-2xl font-bold text-blue-600">-</p>
+                    </div>
+                    <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                        <i class="fas fa-chart-line text-blue-600"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-card bg-white rounded-xl p-4 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">BSE Stocks</p>
+                        <p id="bseCount" class="text-2xl font-bold text-purple-600">-</p>
+                    </div>
+                    <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                        <i class="fas fa-chart-bar text-purple-600"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-card bg-white rounded-xl p-4 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">Both Brokers</p>
+                        <p id="bothCount" class="text-2xl font-bold text-green-600">-</p>
+                    </div>
+                    <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                        <i class="fas fa-check-double text-green-600"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Broker Cards -->
+        <div class="grid md:grid-cols-2 gap-6">
+            <!-- Zerodha Card -->
+            <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                <div class="bg-gradient-to-r from-indigo-500 to-indigo-600 p-4">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                            <i class="fas fa-chart-line text-2xl text-white"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-lg font-bold text-white">Zerodha Kite</h3>
+                            <p class="text-indigo-100 text-sm">NSE/BSE Equity Instruments</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <p class="text-sm text-gray-500">Instruments with Token</p>
+                            <p id="zerodhaCount" class="text-xl font-bold text-gray-900">-</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm text-gray-500">Last Download</p>
+                            <p id="zerodhaLastDownload" class="text-sm font-medium text-gray-700">Never</p>
+                        </div>
+                    </div>
+
+                    <div id="zerodhaProgress" class="hidden mb-4">
+                        <div class="flex justify-between text-sm text-gray-600 mb-1">
+                            <span>Downloading...</span>
+                            <span id="zerodhaProgressText">0%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div id="zerodhaProgressBar" class="progress-bar bg-indigo-600 h-2 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <button id="zerodhaDownloadBtn" onclick="downloadZerodha()" class="download-btn w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center justify-center">
+                        <i class="fas fa-download mr-2"></i>
+                        <span id="zerodhaDownloadText">Download Zerodha Instruments</span>
+                    </button>
+                    <p class="text-xs text-gray-500 mt-2 text-center">
+                        <i class="fas fa-info-circle mr-1"></i>
+                        Requires connected Zerodha broker account
+                    </p>
+                </div>
+            </div>
+
+            <!-- AngelOne Card -->
+            <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                <div class="bg-gradient-to-r from-orange-500 to-orange-600 p-4">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                            <i class="fas fa-chart-bar text-2xl text-white"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-lg font-bold text-white">Angel One</h3>
+                            <p class="text-orange-100 text-sm">NSE/BSE Equity Instruments</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <p class="text-sm text-gray-500">Instruments with Token</p>
+                            <p id="angeloneCount" class="text-xl font-bold text-gray-900">-</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm text-gray-500">Last Download</p>
+                            <p id="angeloneLastDownload" class="text-sm font-medium text-gray-700">Never</p>
+                        </div>
+                    </div>
+
+                    <div id="angeloneProgress" class="hidden mb-4">
+                        <div class="flex justify-between text-sm text-gray-600 mb-1">
+                            <span>Downloading...</span>
+                            <span id="angeloneProgressText">0%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div id="angeloneProgressBar" class="progress-bar bg-orange-600 h-2 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <button id="angeloneDownloadBtn" onclick="downloadAngelOne()" class="download-btn w-full bg-orange-600 text-white py-3 rounded-lg font-semibold hover:bg-orange-700 transition flex items-center justify-center">
+                        <i class="fas fa-download mr-2"></i>
+                        <span id="angeloneDownloadText">Download AngelOne Instruments</span>
+                    </button>
+                    <p class="text-xs text-gray-500 mt-2 text-center">
+                        <i class="fas fa-check-circle mr-1 text-green-500"></i>
+                        No broker login required - public data
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Section -->
+        <div class="mt-8 bg-blue-50 border border-blue-200 rounded-xl p-6">
+            <h4 class="font-semibold text-blue-900 mb-2">
+                <i class="fas fa-info-circle mr-2"></i>About Master Contracts
+            </h4>
+            <p class="text-blue-800 text-sm mb-3">
+                Master contracts contain instrument tokens required for placing orders. Each broker uses different token formats:
+            </p>
+            <ul class="text-sm text-blue-700 space-y-1 ml-4">
+                <li><i class="fas fa-check mr-2"></i><strong>Zerodha:</strong> Uses instrument_token (integer) for Kite API orders</li>
+                <li><i class="fas fa-check mr-2"></i><strong>AngelOne:</strong> Uses symbol_token (string) for Smart API orders</li>
+                <li><i class="fas fa-check mr-2"></i>Instruments are merged - same stock will have both broker tokens</li>
+                <li><i class="fas fa-check mr-2"></i>Download both to enable trading with either broker</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Notification -->
+    <div id="notification" class="fixed bottom-4 right-4 hidden transform transition-all duration-300 translate-y-full">
+        <div class="bg-white rounded-lg shadow-lg border px-6 py-4 flex items-center space-x-3">
+            <i id="notificationIcon" class="fas fa-check-circle text-green-500 text-xl"></i>
+            <span id="notificationText" class="text-gray-700"></span>
+        </div>
+    </div>
+
+    <script>
+        const sessionId = localStorage.getItem('user_session_id');
+
+        // Check auth
+        if (!sessionId) {
+            window.location.href = '/';
+        }
+
+        // Load stats on page load
+        loadStats();
+
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/instruments/status', {
+                    headers: { 'X-Session-ID': sessionId }
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('totalCount').textContent = formatNumber(data.data.total_instruments);
+                    document.getElementById('nseCount').textContent = formatNumber(data.data.nse_instruments);
+                    document.getElementById('bseCount').textContent = formatNumber(data.data.bse_instruments);
+                    document.getElementById('zerodhaCount').textContent = formatNumber(data.data.zerodha_instruments);
+                    document.getElementById('angeloneCount').textContent = formatNumber(data.data.angelone_instruments);
+                    document.getElementById('bothCount').textContent = formatNumber(data.data.both_brokers);
+
+                    // Format dates
+                    if (data.data.zerodha_last_download) {
+                        document.getElementById('zerodhaLastDownload').textContent = formatDate(data.data.zerodha_last_download);
+                    }
+                    if (data.data.angelone_last_download) {
+                        document.getElementById('angeloneLastDownload').textContent = formatDate(data.data.angelone_last_download);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load stats:', e);
+            }
+        }
+
+        async function downloadZerodha() {
+            const btn = document.getElementById('zerodhaDownloadBtn');
+            const textEl = document.getElementById('zerodhaDownloadText');
+            const progressDiv = document.getElementById('zerodhaProgress');
+            const progressBar = document.getElementById('zerodhaProgressBar');
+            const progressText = document.getElementById('zerodhaProgressText');
+
+            btn.disabled = true;
+            textEl.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Downloading...';
+            progressDiv.classList.remove('hidden');
+
+            // Simulate progress
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 15;
+                if (progress > 90) progress = 90;
+                progressBar.style.width = progress + '%';
+                progressText.textContent = Math.round(progress) + '%';
+            }, 500);
+
+            try {
+                const res = await fetch('/api/instruments/download', {
+                    method: 'POST',
+                    headers: { 'X-Session-ID': sessionId }
+                });
+                const data = await res.json();
+
+                clearInterval(progressInterval);
+                progressBar.style.width = '100%';
+                progressText.textContent = '100%';
+
+                if (data.success) {
+                    showNotification('Downloaded ' + formatNumber(data.data.downloaded) + ' Zerodha instruments', 'success');
+                    setTimeout(() => loadStats(), 500);
+                } else {
+                    showNotification(data.error?.message || 'Download failed', 'error');
+                }
+            } catch (e) {
+                clearInterval(progressInterval);
+                showNotification('Download failed: ' + e.message, 'error');
+            }
+
+            setTimeout(() => {
+                btn.disabled = false;
+                textEl.innerHTML = '<i class="fas fa-download mr-2"></i>Download Zerodha Instruments';
+                progressDiv.classList.add('hidden');
+                progressBar.style.width = '0%';
+            }, 1500);
+        }
+
+        async function downloadAngelOne() {
+            const btn = document.getElementById('angeloneDownloadBtn');
+            const textEl = document.getElementById('angeloneDownloadText');
+            const progressDiv = document.getElementById('angeloneProgress');
+            const progressBar = document.getElementById('angeloneProgressBar');
+            const progressText = document.getElementById('angeloneProgressText');
+
+            btn.disabled = true;
+            textEl.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Downloading...';
+            progressDiv.classList.remove('hidden');
+
+            // Simulate progress
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 10;
+                if (progress > 90) progress = 90;
+                progressBar.style.width = progress + '%';
+                progressText.textContent = Math.round(progress) + '%';
+            }, 500);
+
+            try {
+                const res = await fetch('/api/instruments/download-angelone', {
+                    method: 'POST',
+                    headers: { 'X-Session-ID': sessionId }
+                });
+                const data = await res.json();
+
+                clearInterval(progressInterval);
+                progressBar.style.width = '100%';
+                progressText.textContent = '100%';
+
+                if (data.success) {
+                    showNotification('Downloaded ' + formatNumber(data.data.downloaded) + ' AngelOne instruments', 'success');
+                    setTimeout(() => loadStats(), 500);
+                } else {
+                    showNotification(data.error?.message || 'Download failed', 'error');
+                }
+            } catch (e) {
+                clearInterval(progressInterval);
+                showNotification('Download failed: ' + e.message, 'error');
+            }
+
+            setTimeout(() => {
+                btn.disabled = false;
+                textEl.innerHTML = '<i class="fas fa-download mr-2"></i>Download AngelOne Instruments';
+                progressDiv.classList.add('hidden');
+                progressBar.style.width = '0%';
+            }, 1500);
+        }
+
+        function formatNumber(num) {
+            if (!num && num !== 0) return '-';
+            return num.toLocaleString();
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return 'Never';
+            const date = new Date(dateStr);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        }
+
+        function showNotification(message, type = 'success') {
+            const notification = document.getElementById('notification');
+            const icon = document.getElementById('notificationIcon');
+            const text = document.getElementById('notificationText');
+
+            text.textContent = message;
+            icon.className = type === 'success'
+                ? 'fas fa-check-circle text-green-500 text-xl'
+                : 'fas fa-exclamation-circle text-red-500 text-xl';
+
+            notification.classList.remove('hidden', 'translate-y-full');
+            notification.classList.add('translate-y-0');
+
+            setTimeout(() => {
+                notification.classList.remove('translate-y-0');
+                notification.classList.add('translate-y-full');
+                setTimeout(() => notification.classList.add('hidden'), 300);
+            }, 4000);
+        }
+
+        function handleLogout() {
+            fetch('/api/user/logout', {
+                method: 'POST',
+                headers: { 'X-Session-ID': sessionId }
+            }).finally(() => {
+                localStorage.removeItem('session_id');
+                window.location.href = '/';
+            });
+        }
+    </script>
+</body>
+</html>
+  `);
+});
+
 export default app;

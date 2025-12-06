@@ -329,16 +329,30 @@ function renderSidebar() {
     <aside class="w-64 bg-white min-h-screen shadow-sm hidden md:block">
       <nav class="p-4 space-y-1">
         ${navItems.map(item => `
-          <button onclick="setView('${item.id}')" 
+          <button onclick="setView('${item.id}')"
             class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition ${
-              state.currentView === item.id 
-                ? 'bg-indigo-50 text-indigo-600' 
+              state.currentView === item.id
+                ? 'bg-indigo-50 text-indigo-600'
                 : 'text-gray-600 hover:bg-gray-50'
             }">
             <i class="fas ${item.icon} w-5"></i>
             <span>${item.label}</span>
           </button>
         `).join('')}
+
+        <div class="border-t my-3"></div>
+
+        <a href="/contracts"
+          class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+          <i class="fas fa-database w-5"></i>
+          <span>Master Contracts</span>
+        </a>
+
+        <a href="/accounts"
+          class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+          <i class="fas fa-cog w-5"></i>
+          <span>Broker Accounts</span>
+        </a>
       </nav>
     </aside>
   `;
