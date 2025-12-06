@@ -577,6 +577,29 @@ app.get('/onboarding', async (c) => {
                             <span id="brokerHelpText">Get API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a></span>
                         </p>
                     </div>
+                    
+                    <!-- Zerodha Redirect URL Section -->
+                    <div id="zerodhaRedirectSection" class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <i class="fas fa-link text-indigo-600 mt-1"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <h4 class="text-sm font-semibold text-indigo-900">Redirect URL for Kite Connect App</h4>
+                                <p class="text-xs text-indigo-700 mt-1 mb-2">Use this URL when creating your Kite Connect app on the Zerodha developer portal</p>
+                                <div class="flex items-center bg-white rounded border border-indigo-200">
+                                    <input type="text" id="onboardingRedirectUrl" readonly class="flex-1 px-3 py-2 text-sm text-gray-700 bg-transparent border-0 focus:ring-0 font-mono" value="">
+                                    <button type="button" onclick="copyRedirectUrl('onboardingRedirectUrl')" class="px-3 py-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 border-l border-indigo-200 transition rounded-r">
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                </div>
+                                <p class="text-xs text-indigo-600 mt-2">
+                                    <i class="fas fa-lightbulb mr-1"></i>
+                                    Paste this URL in the "Redirect URL" field when registering your Kite Connect app
+                                </p>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- API Key -->
                     <div class="mb-4">
@@ -621,20 +644,39 @@ app.get('/onboarding', async (c) => {
             window.location.href = '/?error=please_login';
         }
         
+        // Set the redirect URL on page load
+        const redirectUrl = window.location.origin + '/api/auth/callback';
+        document.getElementById('onboardingRedirectUrl').value = redirectUrl;
+        
+        function copyRedirectUrl(inputId) {
+            const input = document.getElementById(inputId);
+            navigator.clipboard.writeText(input.value).then(() => {
+                showNotification('Redirect URL copied to clipboard!', 'success');
+            }).catch(err => {
+                // Fallback for older browsers
+                input.select();
+                document.execCommand('copy');
+                showNotification('Redirect URL copied to clipboard!', 'success');
+            });
+        }
+        
         function updateBrokerFields() {
             const brokerType = document.querySelector('input[name="broker_type"]:checked').value;
             const angeloneFields = document.getElementById('angeloneFields');
+            const zerodhaRedirectSection = document.getElementById('zerodhaRedirectSection');
             const brokerHelpText = document.getElementById('brokerHelpText');
             const clientCode = document.getElementById('clientCode');
             const mpin = document.getElementById('mpin');
             
             if (brokerType === 'zerodha') {
                 angeloneFields.classList.add('hidden');
+                zerodhaRedirectSection.classList.remove('hidden');
                 clientCode.removeAttribute('required');
                 mpin.removeAttribute('required');
                 brokerHelpText.innerHTML = 'Get API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a>';
             } else {
                 angeloneFields.classList.remove('hidden');
+                zerodhaRedirectSection.classList.add('hidden');
                 clientCode.setAttribute('required', 'required');
                 mpin.setAttribute('required', 'required');
                 brokerHelpText.innerHTML = 'Get API credentials from <a href="https://smartapi.angelbroking.com" target="_blank" class="underline font-medium">Angel One Smart API Portal</a>';
@@ -807,6 +849,29 @@ app.get('/accounts', async (c) => {
                         <span id="brokerHelpText">Get API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a></span>
                     </p>
                 </div>
+                
+                <!-- Zerodha Redirect URL Section -->
+                <div id="zerodhaRedirectSection" class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <i class="fas fa-link text-indigo-600 mt-1"></i>
+                        </div>
+                        <div class="ml-3 flex-1">
+                            <h4 class="text-sm font-semibold text-indigo-900">Redirect URL for Kite Connect App</h4>
+                            <p class="text-xs text-indigo-700 mt-1 mb-2">Use this URL when creating your Kite Connect app on the Zerodha developer portal</p>
+                            <div class="flex items-center bg-white rounded border border-indigo-200">
+                                <input type="text" id="accountsRedirectUrl" readonly class="flex-1 px-3 py-2 text-sm text-gray-700 bg-transparent border-0 focus:ring-0 font-mono" value="">
+                                <button type="button" onclick="copyRedirectUrl('accountsRedirectUrl')" class="px-3 py-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 border-l border-indigo-200 transition rounded-r">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                            <p class="text-xs text-indigo-600 mt-2">
+                                <i class="fas fa-lightbulb mr-1"></i>
+                                Paste this URL in the "Redirect URL" field when registering your Kite Connect app
+                            </p>
+                        </div>
+                    </div>
+                </div>
 
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
@@ -866,6 +931,22 @@ app.get('/accounts', async (c) => {
         
         if (!sessionId) {
             window.location.href = '/?error=please_login';
+        }
+        
+        // Set the redirect URL for Zerodha
+        const redirectUrl = window.location.origin + '/api/auth/callback';
+        document.getElementById('accountsRedirectUrl').value = redirectUrl;
+        
+        function copyRedirectUrl(inputId) {
+            const input = document.getElementById(inputId);
+            navigator.clipboard.writeText(input.value).then(() => {
+                showNotification('Redirect URL copied to clipboard!', 'success');
+            }).catch(err => {
+                // Fallback for older browsers
+                input.select();
+                document.execCommand('copy');
+                showNotification('Redirect URL copied to clipboard!', 'success');
+            });
         }
         
         // Load accounts on page load
@@ -1080,17 +1161,20 @@ app.get('/accounts', async (c) => {
         function updateBrokerFields() {
             const brokerType = document.querySelector('input[name="broker_type"]:checked').value;
             const angeloneFields = document.getElementById('angeloneFields');
+            const zerodhaRedirectSection = document.getElementById('zerodhaRedirectSection');
             const brokerHelpText = document.getElementById('brokerHelpText');
             const clientCode = document.getElementById('clientCode');
             const mpin = document.getElementById('mpin');
             
             if (brokerType === 'zerodha') {
                 angeloneFields.classList.add('hidden');
+                zerodhaRedirectSection.classList.remove('hidden');
                 clientCode.removeAttribute('required');
                 mpin.removeAttribute('required');
                 brokerHelpText.innerHTML = 'Get API credentials from <a href="https://developers.kite.trade" target="_blank" class="underline font-medium">Kite Connect Portal</a>';
             } else {
                 angeloneFields.classList.remove('hidden');
+                zerodhaRedirectSection.classList.add('hidden');
                 clientCode.setAttribute('required', 'required');
                 mpin.setAttribute('required', 'required');
                 brokerHelpText.innerHTML = 'Get API credentials from <a href="https://smartapi.angelbroking.com" target="_blank" class="underline font-medium">Angel One Smart API Portal</a>';
