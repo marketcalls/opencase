@@ -2,10 +2,16 @@
 export interface Bindings {
   DB: D1Database;
   KV: KVNamespace;
+  // Zerodha credentials (legacy)
   KITE_API_KEY?: string;
   KITE_API_SECRET?: string;
   KITE_REDIRECT_URL?: string;
+  // AngelOne credentials
+  ANGELONE_API_KEY?: string;
+  ANGELONE_CLIENT_CODE?: string;
+  // Common
   ENCRYPTION_KEY?: string;
+  DEFAULT_BROKER?: 'zerodha' | 'angelone';
 }
 
 // Variables type for Hono
@@ -27,15 +33,25 @@ export interface AppConfig {
   updated_at: string;
 }
 
+// Broker types
+export type BrokerType = 'zerodha' | 'angelone';
+
 export interface Account {
   id: number;
-  zerodha_user_id: string;
+  zerodha_user_id: string;          // Legacy: broker user ID
+  broker_user_id?: string;          // Unified broker user ID
+  broker_type: BrokerType;
   name: string;
   email: string | null;
   phone: string | null;
   avatar_url: string | null;
+  // Zerodha-specific (legacy)
   kite_api_key: string | null;
   kite_api_secret: string | null;
+  // AngelOne-specific
+  client_code: string | null;
+  mpin_encrypted: string | null;
+  // Common tokens
   access_token: string | null;
   refresh_token: string | null;
   access_token_expiry: string | null;
@@ -228,23 +244,45 @@ export interface InstrumentCache {
   updated_at: string;
 }
 
+// Unified MasterInstrument supporting multiple brokers
 export interface MasterInstrument {
   id: number;
-  instrument_token: number;
-  exchange_token: number | null;
-  trading_symbol: string;
+  // Unified symbol
+  symbol: string;                    // Common symbol (RELIANCE, TCS)
   name: string | null;
-  exchange: string;
+  exchange: string;                  // NSE, BSE, NFO
+  
+  // Instrument details
+  instrument_type: string | null;    // EQ, FUT, CE, PE
   segment: string | null;
-  instrument_type: string | null;
+  series: string | null;             // EQ, BE
   tick_size: number | null;
   lot_size: number;
   expiry: string | null;
   strike: number | null;
   last_price: number | null;
+  
+  // Zerodha-specific
+  zerodha_token: number | null;      // instrument_token
+  zerodha_exchange_token: number | null;
+  zerodha_trading_symbol: string | null;
+  
+  // AngelOne-specific
+  angelone_token: string | null;
+  angelone_trading_symbol: string | null;
+  
+  // Metadata
   sector: string | null;
   industry: string | null;
   market_cap: 'large' | 'mid' | 'small' | null;
+  isin: string | null;
+  source: string | null;             // 'zerodha', 'angelone', 'manual'
+  
+  // Legacy field for backward compatibility
+  instrument_token?: number;         // @deprecated use zerodha_token
+  trading_symbol?: string;           // @deprecated use symbol
+  exchange_token?: number | null;    // @deprecated use zerodha_exchange_token
+  
   created_at: string;
   updated_at: string;
 }
@@ -462,9 +500,67 @@ export interface ApiResponse<T> {
 // Session data stored in KV
 export interface SessionData {
   account_id: number;
-  zerodha_user_id: string;
+  zerodha_user_id: string;           // Legacy: broker user ID
+  broker_user_id?: string;           // Unified broker user ID
+  broker_type: BrokerType;
   access_token: string;
   name: string | null;
   email: string | null;
   expires_at: number;
+}
+
+// Broker credentials stored in DB
+export interface BrokerCredentials {
+  id: number;
+  account_id: number;
+  broker_type: BrokerType;
+  api_key_encrypted: string;
+  api_secret_encrypted: string;
+  client_code: string | null;        // AngelOne
+  mpin_encrypted: string | null;     // AngelOne
+  access_token: string | null;
+  refresh_token: string | null;
+  token_expiry: string | null;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// Symbol mapping for cross-broker reference
+export interface SymbolMapping {
+  id: number;
+  symbol: string;                    // Unified symbol
+  exchange: string;
+  zerodha_symbol: string | null;
+  zerodha_full_symbol: string | null;
+  angelone_symbol: string | null;
+  angelone_token: string | null;
+  isin: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Price history for performance tracking
+export interface PriceHistory {
+  id: number;
+  symbol: string;
+  exchange: string;
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number;
+  volume: number | null;
+  created_at: string;
+}
+
+// Basket performance snapshot
+export interface BasketPerformance {
+  id: number;
+  basket_id: number;
+  date: string;
+  total_value: number;
+  daily_return: number | null;
+  cumulative_return: number | null;
+  created_at: string;
 }
