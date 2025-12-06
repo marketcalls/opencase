@@ -67,6 +67,8 @@ app.get('/', async (c) => {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenCase - Build Your Own Stock Baskets</title>
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+    <link rel="apple-touch-icon" href="/static/logo.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -82,7 +84,7 @@ app.get('/', async (c) => {
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center space-x-2">
-                    <i class="fas fa-briefcase text-2xl text-indigo-600"></i>
+                    <img src="/static/logo.svg" alt="OpenCase" class="w-10 h-10">
                     <span class="text-xl font-bold text-gray-900">OpenCase</span>
                 </div>
                 <div class="flex items-center space-x-4">
@@ -484,6 +486,8 @@ app.get('/dashboard', async (c) => {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - OpenCase</title>
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+    <link rel="apple-touch-icon" href="/static/logo.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>

@@ -199,7 +199,7 @@ function renderNav() {
         <div class="flex justify-between h-16 items-center">
           <div class="flex items-center space-x-4">
             <a href="/" class="flex items-center space-x-2">
-              <i class="fas fa-layer-group text-2xl text-indigo-600"></i>
+              <img src="/static/logo.svg" alt="OpenCase" class="w-10 h-10">
               <span class="text-xl font-bold text-gray-900">OpenCase</span>
             </a>
           </div>

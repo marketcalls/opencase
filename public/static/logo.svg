@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- Briefcase/Case shape -->
+  <rect x="4" y="14" width="40" height="28" rx="4" fill="#4F46E5"/>
+  <rect x="4" y="14" width="40" height="28" rx="4" stroke="#3730A3" stroke-width="2"/>
+  
+  <!-- Handle -->
+  <path d="M18 14V10C18 7.79086 19.7909 6 22 6H26C28.2091 6 30 7.79086 30 10V14" stroke="#3730A3" stroke-width="3" stroke-linecap="round"/>
+  
+  <!-- Open lid effect -->
+  <path d="M4 22H44" stroke="#3730A3" stroke-width="2"/>
+  
+  <!-- Chart bars inside (representing stocks) -->
+  <rect x="12" y="26" width="5" height="12" rx="1" fill="#A5B4FC"/>
+  <rect x="21" y="30" width="5" height="8" rx="1" fill="#C7D2FE"/>
+  <rect x="30" y="24" width="5" height="14" rx="1" fill="#E0E7FF"/>
+  
+  <!-- Upward arrow (growth) -->
+  <path d="M38 32L42 28M42 28V32M42 28H38" stroke="#10B981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
