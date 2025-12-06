@@ -1,0 +1,26 @@
+# OpenCase Development Dockerfile
+# Includes all dev dependencies for hot-reloading
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Copy source files
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Environment variables
+ENV NODE_ENV=development
+ENV PORT=3000
+
+# Expose port
+EXPOSE 3000
+
+# Start development server
+CMD ["sh", "-c", "npm run build && wrangler d1 migrations apply opencase-db --local && wrangler pages dev dist --d1=opencase-db --local --ip 0.0.0.0 --port 3000"]

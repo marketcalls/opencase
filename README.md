@@ -154,6 +154,57 @@ pm2 start ecosystem.config.cjs
 | `npm run db:reset` | Reset local database |
 | `npm run deploy` | Deploy to Cloudflare Pages |
 
+## Docker Deployment
+
+### Quick Start with Docker
+
+```bash
+# Build and run with Docker Compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+```
+
+### Docker Commands
+
+```bash
+# Build the image
+docker build -t opencase .
+
+# Run container
+docker run -d -p 3000:3000 --name opencase opencase
+
+# Run with persistent data
+docker run -d -p 3000:3000 \
+  -v opencase-data:/app/.wrangler/state/v3/d1 \
+  -e ENCRYPTION_KEY=your-secure-key-32chars!! \
+  --name opencase opencase
+```
+
+### Development with Docker
+
+```bash
+# Run with hot-reload (mounts source code)
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+# Rebuild after changes
+docker-compose up --build
+```
+
+### Docker Files
+
+| File | Description |
+|------|-------------|
+| `Dockerfile` | Multi-stage production build |
+| `Dockerfile.dev` | Development build with all dependencies |
+| `docker-compose.yml` | Production compose configuration |
+| `docker-compose.dev.yml` | Development override with volume mounts |
+| `.dockerignore` | Files excluded from build context |
+
 ## Deployment to Cloudflare
 
 ```bash

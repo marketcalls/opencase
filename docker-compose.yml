@@ -1,0 +1,42 @@
+# OpenCase Docker Compose Configuration
+# Usage:
+#   Development: docker-compose up
+#   Production:  docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   Rebuild:     docker-compose up --build
+
+version: '3.8'
+
+services:
+  opencase:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opencase
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Encryption key for storing API credentials (change in production!)
+      - ENCRYPTION_KEY=opencase-default-key-32chars!!!
+    volumes:
+      # Persist D1 database data
+      - opencase-data:/app/.wrangler/state/v3/d1
+      # Mount seed.sql for initial data (optional)
+      - ./seed.sql:/app/seed.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  opencase-data:
+    driver: local
+
+# Optional: Add networks for multi-container setups
+networks:
+  default:
+    name: opencase-network

@@ -1,0 +1,31 @@
+# OpenCase Docker Compose - Development Override
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# This configuration mounts source code for hot-reloading during development
+
+version: '3.8'
+
+services:
+  opencase:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      - NODE_ENV=development
+    volumes:
+      # Mount source code for hot-reloading
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./migrations:/app/migrations:ro
+      - ./vite.config.ts:/app/vite.config.ts:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./wrangler.jsonc:/app/wrangler.jsonc:ro
+      # Persist node_modules (avoid re-installing on every restart)
+      - opencase-node-modules:/app/node_modules
+      # Persist D1 database
+      - opencase-data:/app/.wrangler/state/v3/d1
+    command: ["sh", "-c", "npm run build && wrangler d1 migrations apply opencase-db --local && wrangler pages dev dist --d1=opencase-db --local --ip 0.0.0.0 --port 3000"]
+
+volumes:
+  opencase-node-modules:
+    driver: local

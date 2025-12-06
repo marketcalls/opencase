@@ -1,0 +1,56 @@
+# OpenCase Docker Ignore File
+# Files and directories to exclude from Docker build context
+
+# Git
+.git
+.gitignore
+
+# Dependencies (will be installed in container)
+node_modules
+
+# Build output (will be regenerated)
+dist
+
+# Wrangler local state (will be regenerated)
+.wrangler
+
+# Environment files (should be passed via docker-compose or env vars)
+.env
+.env.*
+.dev.vars
+
+# IDE/Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__
+coverage
+
+# Documentation (optional - include if needed)
+# docs/
+# *.md
+
+# Docker files (avoid infinite recursion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# PM2 (not needed in Docker)
+ecosystem.config.cjs
+.pm2
