@@ -18,37 +18,38 @@ const sip = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Auth middleware
 sip.use('*', async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData || sessionData.expires_at < Date.now()) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('SESSION_EXPIRED', 'Session expired'), 401);
   }
-  
-  c.set('session', sessionData);
+
+  c.set('session', { user_id: userSession.user_id, email: userSession.email, name: userSession.name, expires_at: userSession.expires_at });
+  c.set('userSession', userSession);
   await next();
 });
 
 /**
  * GET /api/sip
- * Get all SIPs for current account
+ * Get all SIPs for current user
  */
 sip.get('/', async (c) => {
-  const session = c.get('session') as SessionData;
-  
+  const session = c.get('session');
+
   try {
     const sips = await c.env.DB.prepare(`
       SELECT s.*, b.name as basket_name, b.theme as basket_theme
       FROM sips s
       JOIN baskets b ON s.basket_id = b.id
-      WHERE s.account_id = ?
+      WHERE s.user_id = ?
       ORDER BY s.status, s.next_execution_date
-    `).bind(session.account_id).all();
-    
+    `).bind(session.user_id).all();
+
     return c.json(successResponse(sips.results));
   } catch (error) {
     console.error('Get SIPs error:', error);

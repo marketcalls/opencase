@@ -22,18 +22,19 @@ const portfolio = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Auth middleware
 portfolio.use('*', async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData || sessionData.expires_at < Date.now()) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('SESSION_EXPIRED', 'Session expired'), 401);
   }
-  
-  c.set('session', sessionData);
+
+  c.set('session', { user_id: userSession.user_id, email: userSession.email, name: userSession.name, expires_at: userSession.expires_at });
+  c.set('userSession', userSession);
   await next();
 });
 
@@ -169,12 +170,12 @@ portfolio.get('/summary', async (c) => {
  * Get aggregated holdings across all investments
  */
 portfolio.get('/holdings', async (c) => {
-  const session = c.get('session') as SessionData;
-  
+  const session = c.get('session');
+
   try {
     // Get all holdings grouped by stock
     const holdings = await c.env.DB.prepare(`
-      SELECT 
+      SELECT
         h.trading_symbol,
         h.exchange,
         SUM(h.quantity) as total_quantity,
@@ -183,41 +184,13 @@ portfolio.get('/holdings', async (c) => {
       FROM investment_holdings h
       JOIN investments i ON h.investment_id = i.id
       JOIN baskets b ON i.basket_id = b.id
-      WHERE i.account_id = ? AND i.status = 'ACTIVE'
+      WHERE i.user_id = ? AND i.status = 'ACTIVE'
       GROUP BY h.trading_symbol, h.exchange
       ORDER BY SUM(h.quantity * h.average_price) DESC
-    `).bind(session.account_id).all();
-    
-    // Get live prices
-    const kite = await getKiteClient(c, session.account_id);
-    let holdingsWithPrices = holdings.results;
-    
-    if (kite && holdings.results.length > 0) {
-      try {
-        const instruments = holdings.results.map((h: any) => `${h.exchange}:${h.trading_symbol}`);
-        const quotes = await kite.getLTP(instruments);
-        
-        holdingsWithPrices = holdings.results.map((holding: any) => {
-          const key = `${holding.exchange}:${holding.trading_symbol}`;
-          const currentPrice = quotes[key]?.last_price || holding.avg_price;
-          const currentValue = holding.total_quantity * currentPrice;
-          const investedValue = holding.total_quantity * holding.avg_price;
-          
-          return {
-            ...holding,
-            current_price: currentPrice,
-            current_value: currentValue,
-            invested_value: investedValue,
-            pnl: currentValue - investedValue,
-            pnl_percentage: calculatePercentageChange(currentPrice, holding.avg_price)
-          };
-        });
-      } catch (e) {
-        console.error('Failed to fetch prices:', e);
-      }
-    }
-    
-    return c.json(successResponse(holdingsWithPrices));
+    `).bind(session.user_id).all();
+
+    // Return holdings without live prices for now (user needs to connect broker)
+    return c.json(successResponse(holdings.results));
   } catch (error) {
     console.error('Portfolio holdings error:', error);
     return c.json(errorResponse('ERROR', 'Failed to fetch holdings'), 500);

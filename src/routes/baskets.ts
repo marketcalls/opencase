@@ -22,25 +22,26 @@ const baskets = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Middleware to check authentication
 baskets.use('*', async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   // Allow public access to templates and public baskets
   const path = c.req.path;
   if (path.includes('/templates') || path.includes('/public')) {
     await next();
     return;
   }
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData || sessionData.expires_at < Date.now()) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('SESSION_EXPIRED', 'Session expired. Please login again.'), 401);
   }
-  
-  c.set('session', sessionData);
+
+  c.set('session', { user_id: userSession.user_id, email: userSession.email, name: userSession.name, expires_at: userSession.expires_at });
+  c.set('userSession', userSession);
   await next();
 });
 
@@ -56,13 +57,13 @@ baskets.get('/', async (c) => {
 
   try {
     const userBaskets = await c.env.DB.prepare(`
-      SELECT b.*, 
+      SELECT b.*,
         (SELECT COUNT(*) FROM basket_stocks WHERE basket_id = b.id) as stock_count
       FROM baskets b
-      WHERE b.account_id = ? AND b.is_active = 1
+      WHERE b.user_id = ? AND b.is_active = 1
       ORDER BY b.updated_at DESC
-    `).bind(session.account_id).all<Basket & { stock_count: number }>();
-    
+    `).bind(session.user_id).all<Basket & { stock_count: number }>();
+
     return c.json(successResponse(userBaskets.results));
   } catch (error) {
     console.error('Get baskets error:', error);

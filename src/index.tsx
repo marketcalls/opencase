@@ -384,11 +384,11 @@ app.get('/', async (c) => {
             e.preventDefault();
             const email = document.getElementById('loginEmail').value;
             const password = document.getElementById('loginPassword').value;
-            
+
             const submitBtn = document.getElementById('loginSubmitBtn');
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Logging in...';
-            
+
             try {
                 const res = await fetch('/api/user/login', {
                     method: 'POST',
@@ -396,9 +396,16 @@ app.get('/', async (c) => {
                     body: JSON.stringify({ email, password })
                 });
                 const data = await res.json();
-                
+                console.log('[DEBUG] Login response:', data);
+
                 if (data.success) {
+                    console.log('[DEBUG] Storing session_id:', data.data.session_id.substring(0, 10) + '...');
                     localStorage.setItem('user_session_id', data.data.session_id);
+
+                    // Verify it was stored
+                    const stored = localStorage.getItem('user_session_id');
+                    console.log('[DEBUG] Verified stored session:', stored ? stored.substring(0, 10) + '...' : 'FAILED TO STORE!');
+
                     showNotification('Welcome back!', 'success');
                     hideLoginModal();
                     // Redirect to dashboard
@@ -407,6 +414,7 @@ app.get('/', async (c) => {
                     showNotification(data.error?.message || 'Login failed', 'error');
                 }
             } catch (e) {
+                console.error('[DEBUG] Login error:', e);
                 showNotification('Error logging in', 'error');
             } finally {
                 submitBtn.disabled = false;

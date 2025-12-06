@@ -1,3 +1,5 @@
+console.log('[DEBUG] app.js file is loading...');
+
 /**
  * OpenCase Frontend Application
  * Comprehensive dashboard for managing stock baskets with direct API order placement
@@ -36,6 +38,8 @@ const api = {
       ...(state.sessionId && { 'X-Session-ID': state.sessionId })
     };
 
+    console.log('[DEBUG] API request:', endpoint, 'with X-Session-ID:', state.sessionId ? state.sessionId.substring(0, 10) + '...' : 'null');
+
     try {
       const response = await fetch(`/api${endpoint}`, {
         ...options,
@@ -64,9 +68,12 @@ const api = {
 
 // Initialize app
 async function initApp() {
+  console.log('[DEBUG] initApp() called');
+
   // Use the new user_session_id for user authentication
   state.sessionId = localStorage.getItem('user_session_id');
-  
+  console.log('[DEBUG] Session ID from localStorage:', state.sessionId ? state.sessionId.substring(0, 10) + '...' : 'null');
+
   // Also check for legacy session_id from URL (for backward compatibility with broker OAuth redirects)
   const urlParams = new URLSearchParams(window.location.search);
   const legacySession = urlParams.get('session_id');
@@ -74,15 +81,18 @@ async function initApp() {
     localStorage.setItem('session_id', legacySession);
     window.history.replaceState({}, document.title, '/dashboard');
   }
-  
+
   if (!state.sessionId) {
+    console.log('[DEBUG] No session ID, redirecting to home');
     window.location.href = '/?error=please_login';
     return;
   }
 
   // Check user auth status
+  console.log('[DEBUG] Calling /api/user/status with session:', state.sessionId.substring(0, 10) + '...');
   const userRes = await api.get('/user/status');
-  
+  console.log('[DEBUG] /api/user/status response:', userRes);
+
   if (userRes?.success && userRes.data.is_authenticated) {
     state.user = userRes.data.user;
     state.account = userRes.data.user; // For backward compatibility
@@ -104,6 +114,7 @@ async function initApp() {
     await loadDashboardData();
     renderApp();
   } else {
+    console.log('[DEBUG] Not authenticated, redirecting to home. userRes:', userRes);
     window.location.href = '/?error=please_login';
   }
 }

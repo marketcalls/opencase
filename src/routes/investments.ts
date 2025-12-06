@@ -26,18 +26,19 @@ const investments = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Auth middleware
 investments.use('*', async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData || sessionData.expires_at < Date.now()) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('SESSION_EXPIRED', 'Session expired'), 401);
   }
-  
-  c.set('session', sessionData);
+
+  c.set('session', { user_id: userSession.user_id, email: userSession.email, name: userSession.name, expires_at: userSession.expires_at });
+  c.set('userSession', userSession);
   await next();
 });
 
@@ -83,20 +84,20 @@ async function getKiteClient(
 
 /**
  * GET /api/investments
- * Get all investments for current account
+ * Get all investments for current user
  */
 investments.get('/', async (c) => {
-  const session = c.get('session') as SessionData;
-  
+  const session = c.get('session');
+
   try {
     const userInvestments = await c.env.DB.prepare(`
       SELECT i.*, b.name as basket_name, b.theme as basket_theme
       FROM investments i
       JOIN baskets b ON i.basket_id = b.id
-      WHERE i.account_id = ? AND i.status != 'SOLD'
+      WHERE i.user_id = ? AND i.status != 'SOLD'
       ORDER BY i.invested_at DESC
-    `).bind(session.account_id).all();
-    
+    `).bind(session.user_id).all();
+
     return c.json(successResponse(userInvestments.results));
   } catch (error) {
     console.error('Get investments error:', error);

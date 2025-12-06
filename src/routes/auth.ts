@@ -425,17 +425,17 @@ auth.post('/logout', async (c) => {
  */
 auth.get('/accounts', async (c) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('UNAUTHORIZED', 'Invalid session'), 401);
   }
-  
+
   try {
     const accounts = await c.env.DB.prepare(`
       SELECT id, zerodha_user_id, name, email, avatar_url, is_primary, is_active, last_login_at

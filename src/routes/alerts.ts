@@ -18,45 +18,46 @@ const alerts = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Auth middleware
 alerts.use('*', async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!sessionId) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
-  
-  const sessionData = await c.env.KV.get(`session:${sessionId}`, 'json') as SessionData | null;
-  
-  if (!sessionData || sessionData.expires_at < Date.now()) {
+
+  // Check for user session
+  const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number } | null;
+  if (!userSession || userSession.expires_at < Date.now()) {
     return c.json(errorResponse('SESSION_EXPIRED', 'Session expired'), 401);
   }
-  
-  c.set('session', sessionData);
+
+  c.set('session', { user_id: userSession.user_id, email: userSession.email, name: userSession.name, expires_at: userSession.expires_at });
+  c.set('userSession', userSession);
   await next();
 });
 
 /**
  * GET /api/alerts
- * Get all alerts for current account
+ * Get all alerts for current user
  */
 alerts.get('/', async (c) => {
-  const session = c.get('session') as SessionData;
+  const session = c.get('session');
   const active_only = c.req.query('active_only') === 'true';
-  
+
   try {
     let query = `
       SELECT * FROM alerts
-      WHERE account_id = ?
+      WHERE user_id = ?
     `;
-    
+
     if (active_only) {
       query += ' AND is_active = 1';
     }
-    
+
     query += ' ORDER BY created_at DESC';
-    
+
     const userAlerts = await c.env.DB.prepare(query)
-      .bind(session.account_id)
+      .bind(session.user_id)
       .all<Alert>();
-    
+
     return c.json(successResponse(userAlerts.results));
   } catch (error) {
     console.error('Get alerts error:', error);
