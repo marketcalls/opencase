@@ -2371,7 +2371,7 @@ function renderBasketDetail() {
 // Refresh basket prices
 async function refreshBasketPrices(basketId) {
   showNotification('Refreshing prices...', 'info');
-  const res = await api.get(\`/baskets/\${basketId}\`);
+  const res = await api.get(`/baskets/${basketId}`);
   if (res?.success) {
     state.selectedBasket = res.data;
     renderApp();
