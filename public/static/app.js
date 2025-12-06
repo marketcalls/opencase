@@ -20,7 +20,9 @@ const state = {
   basketStocks: [],
   searchResults: [],
   loading: true,
-  instrumentsStatus: null
+  instrumentsStatus: null,
+  investmentAmount: 50000,  // Default investment amount for basket creation
+  weightingScheme: 'custom' // 'equal' or 'custom'
 };
 
 // API Helper
@@ -545,89 +547,111 @@ function renderPortfolioHoldings() {
 }
 
 function renderCreateBasket() {
+  const minInvestment = calculateMinInvestment();
+  
   return `
     <div class="space-y-6">
       <div class="flex items-center space-x-4">
         <button onclick="setView('baskets')" class="text-gray-500 hover:text-gray-700">
           <i class="fas fa-arrow-left"></i>
         </button>
-        <h1 class="text-2xl font-bold text-gray-900">Create New Basket</h1>
+        <h1 class="text-2xl font-bold text-gray-900 flex items-center">
+          <span id="basketNameDisplay">Create New Basket</span>
+          <button onclick="editBasketName()" class="ml-2 text-gray-400 hover:text-gray-600">
+            <i class="fas fa-pencil-alt text-sm"></i>
+          </button>
+        </h1>
       </div>
 
-      <div class="bg-white rounded-xl shadow-sm p-6">
+      <div class="bg-white rounded-xl shadow-sm">
         <form id="createBasketForm" onsubmit="handleCreateBasket(event)">
-          <div class="grid grid-cols-2 gap-6 mb-6">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">Basket Name *</label>
-              <input type="text" id="basketName" required 
-                class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" 
-                placeholder="My Tech Portfolio">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">Theme</label>
-              <select id="basketTheme" class="w-full px-4 py-2 border rounded-lg">
-                <option value="">Select theme</option>
-                <option value="Technology">Technology</option>
-                <option value="Banking">Banking</option>
-                <option value="Healthcare">Healthcare</option>
-                <option value="Consumer">Consumer</option>
-                <option value="Automobile">Automobile</option>
-                <option value="Dividend">Dividend</option>
-                <option value="Growth">Growth</option>
-              </select>
-            </div>
-          </div>
+          <!-- Header Section -->
+          <div class="p-6 border-b">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <!-- Left: Basket Name & Search -->
+              <div>
+                <div class="mb-4">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Basket Name *</label>
+                  <input type="text" id="basketName" required 
+                    class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" 
+                    placeholder="My Tech Portfolio"
+                    onchange="updateBasketNameDisplay()">
+                </div>
+                <div class="flex items-center space-x-2">
+                  <select id="basketTheme" class="px-3 py-2 border rounded-lg text-sm">
+                    <option value="">Select theme</option>
+                    <option value="Technology">Technology</option>
+                    <option value="Banking">Banking</option>
+                    <option value="Healthcare">Healthcare</option>
+                    <option value="Consumer">Consumer</option>
+                    <option value="Automobile">Automobile</option>
+                    <option value="Dividend">Dividend</option>
+                    <option value="Growth">Growth</option>
+                  </select>
+                  <div class="relative flex-1">
+                    <input type="text" id="stockSearch" 
+                      class="w-full px-4 py-2 border rounded-lg pl-10 text-sm" 
+                      placeholder="Search by name or ticker"
+                      onkeyup="debounceSearch(this.value)"
+                      autocomplete="off">
+                    <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                  </div>
+                </div>
+                <div id="searchResults" class="mt-2 bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto hidden absolute z-10 w-96"></div>
+              </div>
 
-          <div class="mb-6">
-            <label class="block text-sm font-medium text-gray-700 mb-2">Description</label>
-            <textarea id="basketDescription" rows="2" 
-              class="w-full px-4 py-2 border rounded-lg" 
-              placeholder="A diversified portfolio of tech stocks..."></textarea>
-          </div>
+              <!-- Center: Weighting Scheme -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Weighting Scheme</label>
+                <select id="weightingScheme" class="w-full px-4 py-2 border rounded-lg" onchange="changeWeightingScheme(this.value)">
+                  <option value="custom" ${state.weightingScheme === 'custom' ? 'selected' : ''}>Custom Weighted</option>
+                  <option value="equal" ${state.weightingScheme === 'equal' ? 'selected' : ''}>Equal Weighted</option>
+                </select>
+              </div>
 
-          <div class="mb-6">
-            <div class="flex justify-between items-center mb-4">
-              <label class="block text-sm font-medium text-gray-700">Stocks (Max 20)</label>
-              <div class="flex space-x-2">
-                <button type="button" onclick="applyEqualWeights()" class="text-sm bg-indigo-100 text-indigo-600 px-3 py-1 rounded-full hover:bg-indigo-200">
-                  <i class="fas fa-balance-scale mr-1"></i>Equal Weights
-                </button>
+              <!-- Right: Minimum Investment Amount -->
+              <div class="text-right">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Minimum Investment Amount</label>
+                <div class="text-3xl font-bold text-gray-900" id="minInvestmentDisplay">
+                  ${formatCurrency(minInvestment)}
+                </div>
+                <p class="text-xs text-gray-500 mt-1">Based on current LTP & weights</p>
               </div>
             </div>
-
-            <!-- Stock Search -->
-            <div class="mb-4">
-              <div class="relative">
-                <input type="text" id="stockSearch" 
-                  class="w-full px-4 py-2 border rounded-lg pl-10" 
-                  placeholder="Search stocks by symbol or name..."
-                  onkeyup="debounceSearch(this.value)"
-                  autocomplete="off">
-                <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-              </div>
-              <div id="searchResults" class="mt-2 bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto hidden"></div>
-            </div>
-
-            <!-- Selected Stocks -->
-            <div id="selectedStocks" class="space-y-2">
-              ${state.basketStocks.length === 0 ? `
-                <p class="text-center text-gray-500 py-4">No stocks added yet. Search and add stocks above.</p>
-              ` : renderSelectedStocks()}
-            </div>
-
-            <div class="mt-4 flex justify-between items-center text-sm">
-              <span class="text-gray-500">Total Weight: <span id="totalWeight" class="font-medium">0%</span></span>
-              <span class="text-gray-500"><span id="stockCount">0</span>/20 stocks</span>
-            </div>
           </div>
 
-          <div class="flex justify-end space-x-4">
-            <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-50">
-              Cancel
-            </button>
-            <button type="submit" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-              <i class="fas fa-save mr-2"></i>Create Basket
-            </button>
+          <!-- Description (collapsible) -->
+          <div class="px-6 py-3 border-b bg-gray-50">
+            <textarea id="basketDescription" rows="1" 
+              class="w-full px-3 py-2 border rounded-lg text-sm bg-white" 
+              placeholder="Add a description for your basket..."></textarea>
+          </div>
+
+          <!-- Stocks Table -->
+          <div class="p-6">
+            ${state.basketStocks.length === 0 ? `
+              <div class="text-center py-12 text-gray-500">
+                <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
+                <p class="text-lg">Search and add stocks to your basket</p>
+                <p class="text-sm">You can add up to 20 stocks</p>
+              </div>
+            ` : renderStocksTable()}
+          </div>
+
+          <!-- Footer -->
+          <div class="px-6 py-4 border-t bg-gray-50 flex justify-between items-center">
+            <div class="flex items-center space-x-6 text-sm">
+              <span class="text-gray-500">Total Weight: <span id="totalWeight" class="font-bold ${getTotalWeight() === 100 ? 'text-green-600' : 'text-red-600'}">${getTotalWeight().toFixed(2)}%</span></span>
+              <span class="text-gray-500"><span id="stockCount">${state.basketStocks.length}</span>/20 stocks</span>
+            </div>
+            <div class="flex space-x-4">
+              <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-100">
+                Cancel
+              </button>
+              <button type="submit" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center" ${state.basketStocks.length === 0 ? 'disabled' : ''}>
+                <i class="fas fa-save mr-2"></i>Create Basket
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -635,32 +659,161 @@ function renderCreateBasket() {
   `;
 }
 
-function renderSelectedStocks() {
-  return state.basketStocks.map((stock, index) => `
-    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-      <div class="flex items-center space-x-4">
-        <span class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-sm font-medium text-indigo-600">${index + 1}</span>
-        <div>
-          <p class="font-medium">${stock.trading_symbol}</p>
-          <p class="text-xs text-gray-500">${stock.name || ''} • ${stock.exchange}</p>
-        </div>
-        ${stock.last_price ? `<span class="text-sm text-gray-600">${formatCurrency(stock.last_price)}</span>` : ''}
-      </div>
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center">
-          <input type="number" 
-            class="w-20 px-2 py-1 border rounded text-right stock-weight" 
-            value="${stock.weight_percentage}" 
-            min="0.01" max="100" step="0.01"
-            onchange="updateStockWeight(${index}, this.value)">
-          <span class="ml-1">%</span>
-        </div>
-        <button type="button" onclick="removeStock(${index})" class="text-red-500 hover:text-red-700">
-          <i class="fas fa-times"></i>
-        </button>
-      </div>
+function renderStocksTable() {
+  const minInvestment = calculateMinInvestment();
+  
+  return `
+    <div class="overflow-x-auto">
+      <table class="w-full">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Price (₹)</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Weights</th>
+            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Shares | Weights</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y">
+          ${state.basketStocks.map((stock, index) => {
+            const shares = calculateShares(stock, minInvestment);
+            return `
+              <tr class="hover:bg-gray-50">
+                <td class="px-4 py-4">
+                  <div class="flex items-center">
+                    <a href="#" class="text-indigo-600 hover:text-indigo-800 font-medium">${stock.trading_symbol || stock.symbol}</a>
+                    <span class="ml-2 text-xs text-gray-400">${stock.name || ''}</span>
+                  </div>
+                </td>
+                <td class="px-4 py-4 text-right font-medium">
+                  ${stock.last_price ? formatNumber(stock.last_price, 2) : '-'}
+                </td>
+                <td class="px-4 py-4">
+                  <div class="flex items-center justify-center space-x-1">
+                    <button type="button" onclick="adjustWeight(${index}, -0.5)" class="w-8 h-8 rounded-full border border-gray-300 hover:bg-gray-100 flex items-center justify-center text-gray-600">
+                      <i class="fas fa-minus text-xs"></i>
+                    </button>
+                    <input type="number" 
+                      class="w-16 px-2 py-1 border rounded text-center text-sm font-medium stock-weight" 
+                      value="${stock.weight_percentage.toFixed(2)}" 
+                      min="0.01" max="100" step="0.01"
+                      onchange="updateStockWeight(${index}, this.value)">
+                    <button type="button" onclick="adjustWeight(${index}, 0.5)" class="w-8 h-8 rounded-full border border-gray-300 hover:bg-gray-100 flex items-center justify-center text-gray-600">
+                      <i class="fas fa-plus text-xs"></i>
+                    </button>
+                  </div>
+                </td>
+                <td class="px-4 py-4 text-right">
+                  <span class="font-medium">${shares}</span>
+                  <span class="text-gray-400 mx-1">|</span>
+                  <span class="text-gray-600">${stock.weight_percentage.toFixed(2)}%</span>
+                </td>
+                <td class="px-4 py-4 text-center">
+                  <button type="button" onclick="removeStock(${index})" class="text-red-500 hover:text-red-700">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
     </div>
-  `).join('');
+    
+    <!-- Equal Weights Button -->
+    <div class="mt-4 flex justify-end">
+      <button type="button" onclick="applyEqualWeights()" class="text-sm bg-indigo-100 text-indigo-600 px-4 py-2 rounded-lg hover:bg-indigo-200">
+        <i class="fas fa-balance-scale mr-2"></i>Equal Weights
+      </button>
+    </div>
+  `;
+}
+
+function calculateMinInvestment() {
+  if (state.basketStocks.length === 0) return 0;
+  
+  let minInvestment = 0;
+  
+  // For each stock, calculate minimum investment needed to buy at least 1 share
+  state.basketStocks.forEach(stock => {
+    if (stock.last_price && stock.weight_percentage > 0) {
+      // Min investment = price / (weight/100)
+      // This ensures at least 1 share for each stock based on its weight
+      const minForStock = stock.last_price / (stock.weight_percentage / 100);
+      if (minForStock > minInvestment) {
+        minInvestment = minForStock;
+      }
+    }
+  });
+  
+  // Round up to nearest 100
+  return Math.ceil(minInvestment / 100) * 100;
+}
+
+function calculateShares(stock, totalInvestment) {
+  if (!stock.last_price || !stock.weight_percentage || totalInvestment <= 0) {
+    return 0;
+  }
+  
+  const amountForStock = totalInvestment * (stock.weight_percentage / 100);
+  const shares = Math.floor(amountForStock / stock.last_price);
+  return shares;
+}
+
+function getTotalWeight() {
+  return state.basketStocks.reduce((sum, s) => sum + (s.weight_percentage || 0), 0);
+}
+
+function adjustWeight(index, delta) {
+  const stock = state.basketStocks[index];
+  let newWeight = stock.weight_percentage + delta;
+  
+  // Clamp between 0.01 and 100
+  newWeight = Math.max(0.01, Math.min(100, newWeight));
+  
+  stock.weight_percentage = parseFloat(newWeight.toFixed(2));
+  
+  updateBasketDisplay();
+}
+
+function changeWeightingScheme(scheme) {
+  state.weightingScheme = scheme;
+  if (scheme === 'equal') {
+    applyEqualWeights();
+  }
+}
+
+function updateBasketNameDisplay() {
+  const name = document.getElementById('basketName').value || 'Create New Basket';
+  document.getElementById('basketNameDisplay').textContent = name;
+}
+
+function editBasketName() {
+  document.getElementById('basketName').focus();
+}
+
+function updateBasketDisplay() {
+  // Update the stocks table section
+  const stocksContainer = document.querySelector('#createBasketForm .p-6:not(.border-b)');
+  if (stocksContainer && state.basketStocks.length > 0) {
+    stocksContainer.innerHTML = renderStocksTable();
+  }
+  
+  // Update totals
+  updateWeightDisplay();
+  
+  // Update minimum investment
+  const minInvestment = calculateMinInvestment();
+  const minDisplay = document.getElementById('minInvestmentDisplay');
+  if (minDisplay) {
+    minDisplay.textContent = formatCurrency(minInvestment);
+  }
+}
+
+function renderSelectedStocks() {
+  // This function is now only used as a fallback
+  // The main display is handled by renderStocksTable()
+  return renderStocksTable();
 }
 
 function renderBaskets() {
@@ -1245,49 +1398,106 @@ function addStock(stock) {
     return;
   }
   
-  if (state.basketStocks.find(s => s.trading_symbol === stock.trading_symbol && s.exchange === stock.exchange)) {
+  const tradingSymbol = stock.trading_symbol || stock.symbol;
+  if (state.basketStocks.find(s => (s.trading_symbol || s.symbol) === tradingSymbol && s.exchange === stock.exchange)) {
     showNotification('Stock already added', 'warning');
     return;
   }
   
+  // Ensure trading_symbol is set
+  if (!stock.trading_symbol && stock.symbol) {
+    stock.trading_symbol = stock.symbol;
+  }
+  
   stock.weight_percentage = 0;
   state.basketStocks.push(stock);
-  applyEqualWeights();
+  
+  // Apply equal weights or redistribute in custom mode
+  if (state.weightingScheme === 'equal') {
+    applyEqualWeights();
+  } else {
+    // In custom mode, give new stock an equal share and reduce others proportionally
+    const newWeight = parseFloat((100 / state.basketStocks.length).toFixed(2));
+    const scaleFactor = (100 - newWeight) / 100;
+    
+    state.basketStocks.forEach((s, i) => {
+      if (i < state.basketStocks.length - 1) {
+        s.weight_percentage = parseFloat((s.weight_percentage * scaleFactor).toFixed(2));
+      } else {
+        s.weight_percentage = newWeight;
+      }
+    });
+    
+    // Adjust for rounding
+    const total = getTotalWeight();
+    if (Math.abs(total - 100) > 0.01) {
+      state.basketStocks[0].weight_percentage += parseFloat((100 - total).toFixed(2));
+    }
+    
+    updateBasketDisplay();
+  }
   
   document.getElementById('searchResults').classList.add('hidden');
   document.getElementById('stockSearch').value = '';
+  
+  // Re-render stocks table if we just added the first stock
+  if (state.basketStocks.length === 1) {
+    const stocksContainer = document.querySelector('#createBasketForm .p-6:not(.border-b)');
+    if (stocksContainer) {
+      stocksContainer.innerHTML = renderStocksTable();
+    }
+  }
 }
 
 function removeStock(index) {
   state.basketStocks.splice(index, 1);
-  applyEqualWeights();
+  
+  if (state.weightingScheme === 'equal') {
+    applyEqualWeights();
+  } else {
+    updateBasketDisplay();
+  }
+  
+  // If no stocks left, re-render to show empty state
+  if (state.basketStocks.length === 0) {
+    const stocksContainer = document.querySelector('#createBasketForm .p-6:not(.border-b)');
+    if (stocksContainer) {
+      stocksContainer.innerHTML = `
+        <div class="text-center py-12 text-gray-500">
+          <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
+          <p class="text-lg">Search and add stocks to your basket</p>
+          <p class="text-sm">You can add up to 20 stocks</p>
+        </div>
+      `;
+    }
+    updateWeightDisplay();
+  }
 }
 
 function updateStockWeight(index, value) {
   const newWeight = parseFloat(value) || 0;
-  state.basketStocks[index].weight_percentage = newWeight;
+  state.basketStocks[index].weight_percentage = Math.max(0.01, Math.min(100, newWeight));
   
-  // Recalculate other weights
-  const remainingWeight = 100 - newWeight;
-  const remainingStocks = state.basketStocks.length - 1;
-  const equalWeight = remainingStocks > 0 ? remainingWeight / remainingStocks : 0;
+  // In custom mode, don't auto-adjust other weights
+  if (state.weightingScheme === 'equal') {
+    // In equal mode, switching to custom mode
+    state.weightingScheme = 'custom';
+    const schemeSelect = document.getElementById('weightingScheme');
+    if (schemeSelect) schemeSelect.value = 'custom';
+  }
   
-  state.basketStocks.forEach((stock, i) => {
-    if (i !== index) {
-      stock.weight_percentage = parseFloat(equalWeight.toFixed(2));
-    }
-  });
-  
-  updateWeightDisplay();
-  document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
+  updateBasketDisplay();
 }
 
 function applyEqualWeights() {
   if (state.basketStocks.length === 0) {
     updateWeightDisplay();
-    document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
     return;
   }
+  
+  state.weightingScheme = 'equal';
+  const schemeSelect = document.getElementById('weightingScheme');
+  if (schemeSelect) schemeSelect.value = 'equal';
   
   const equalWeight = parseFloat((100 / state.basketStocks.length).toFixed(2));
   state.basketStocks.forEach((stock, index) => {
@@ -1297,17 +1507,31 @@ function applyEqualWeights() {
   // Adjust last stock for rounding
   const total = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
   if (Math.abs(total - 100) > 0.01 && state.basketStocks.length > 0) {
-    state.basketStocks[state.basketStocks.length - 1].weight_percentage += (100 - total);
+    state.basketStocks[state.basketStocks.length - 1].weight_percentage += parseFloat((100 - total).toFixed(2));
   }
   
-  updateWeightDisplay();
-  document.getElementById('selectedStocks').innerHTML = renderSelectedStocks();
+  updateBasketDisplay();
 }
 
 function updateWeightDisplay() {
-  const total = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
-  document.getElementById('totalWeight').textContent = total.toFixed(2) + '%';
-  document.getElementById('stockCount').textContent = state.basketStocks.length;
+  const total = getTotalWeight();
+  const totalWeightEl = document.getElementById('totalWeight');
+  const stockCountEl = document.getElementById('stockCount');
+  
+  if (totalWeightEl) {
+    totalWeightEl.textContent = total.toFixed(2) + '%';
+    totalWeightEl.className = `font-bold ${Math.abs(total - 100) < 0.1 ? 'text-green-600' : 'text-red-600'}`;
+  }
+  if (stockCountEl) {
+    stockCountEl.textContent = state.basketStocks.length;
+  }
+  
+  // Update min investment display
+  const minInvestment = calculateMinInvestment();
+  const minDisplay = document.getElementById('minInvestmentDisplay');
+  if (minDisplay) {
+    minDisplay.textContent = formatCurrency(minInvestment);
+  }
 }
 
 async function handleCreateBasket(e) {
