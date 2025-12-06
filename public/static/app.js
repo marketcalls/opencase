@@ -6,7 +6,10 @@
 // State management
 const state = {
   sessionId: null,
-  account: null,
+  user: null,           // Current logged-in user
+  brokerAccounts: [],   // User's broker accounts
+  activeBrokerAccount: null, // Currently selected broker for trading
+  account: null,        // Legacy - for backward compatibility
   accounts: [],
   baskets: [],
   investments: [],
@@ -61,21 +64,36 @@ const api = {
 
 // Initialize app
 async function initApp() {
-  const urlParams = new URLSearchParams(window.location.search);
-  state.sessionId = urlParams.get('session_id') || localStorage.getItem('session_id');
+  // Use the new user_session_id for user authentication
+  state.sessionId = localStorage.getItem('user_session_id');
   
-  if (state.sessionId) {
-    localStorage.setItem('session_id', state.sessionId);
-    if (urlParams.get('session_id')) {
-      window.history.replaceState({}, document.title, '/dashboard');
-    }
+  // Also check for legacy session_id from URL (for backward compatibility with broker OAuth redirects)
+  const urlParams = new URLSearchParams(window.location.search);
+  const legacySession = urlParams.get('session_id');
+  if (legacySession) {
+    localStorage.setItem('session_id', legacySession);
+    window.history.replaceState({}, document.title, '/dashboard');
+  }
+  
+  if (!state.sessionId) {
+    window.location.href = '/?error=please_login';
+    return;
   }
 
-  // Check auth status
-  const authRes = await api.get('/auth/status');
+  // Check user auth status
+  const userRes = await api.get('/user/status');
   
-  if (authRes?.success && authRes.data.authenticated) {
-    state.account = authRes.data.account;
+  if (userRes?.success && userRes.data.is_authenticated) {
+    state.user = userRes.data.user;
+    state.account = userRes.data.user; // For backward compatibility
+    
+    // Load broker accounts
+    const brokerRes = await api.get('/broker-accounts');
+    if (brokerRes?.success) {
+      state.brokerAccounts = brokerRes.data;
+      // Find first connected account as active
+      state.activeBrokerAccount = state.brokerAccounts.find(acc => acc.is_connected);
+    }
     
     // Check instruments status
     const instrStatus = await api.get('/instruments/status');
@@ -193,6 +211,8 @@ function renderLoading() {
 }
 
 function renderNav() {
+  const activeBroker = state.activeBrokerAccount;
+  
   return `
     <nav class="bg-white shadow-sm sticky top-0 z-40">
       <div class="max-w-full mx-auto px-4">
@@ -211,6 +231,23 @@ function renderNav() {
               </button>
             ` : ''}
             
+            <!-- Active Broker Account Indicator -->
+            ${activeBroker ? `
+              <div class="flex items-center space-x-2 px-3 py-1 bg-green-50 rounded-full border border-green-200">
+                <i class="fas fa-circle text-green-500 text-xs"></i>
+                <span class="text-sm text-green-700">${activeBroker.account_name}</span>
+              </div>
+            ` : `
+              <a href="/accounts" class="flex items-center space-x-2 px-3 py-1 bg-yellow-50 rounded-full border border-yellow-200 hover:bg-yellow-100">
+                <i class="fas fa-exclamation-circle text-yellow-500 text-xs"></i>
+                <span class="text-sm text-yellow-700">Connect Broker</span>
+              </a>
+            `}
+            
+            <a href="/accounts" class="text-gray-500 hover:text-gray-700" title="Manage Accounts">
+              <i class="fas fa-plug"></i>
+            </a>
+            
             <button onclick="showSettingsModal()" class="text-gray-500 hover:text-gray-700">
               <i class="fas fa-cog"></i>
             </button>
@@ -218,31 +255,46 @@ function renderNav() {
             <div class="relative group">
               <button class="flex items-center space-x-2 px-3 py-2 rounded-lg hover:bg-gray-100">
                 <i class="fas fa-user-circle text-gray-500"></i>
-                <span class="text-sm font-medium text-gray-700">${state.account?.name || 'Account'}</span>
+                <span class="text-sm font-medium text-gray-700">${state.user?.name || 'User'}</span>
                 <i class="fas fa-chevron-down text-xs text-gray-400"></i>
               </button>
               <div class="hidden group-hover:block absolute right-0 mt-1 w-64 bg-white rounded-lg shadow-lg border py-1 z-50">
-                ${state.accounts.map(acc => `
-                  <button onclick="switchAccount(${acc.id})" class="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center space-x-3 ${acc.id === state.account?.id ? 'bg-indigo-50' : ''}">
-                    <i class="fas fa-user text-gray-400"></i>
-                    <div class="flex-1">
-                      <p class="text-sm font-medium">${acc.name}</p>
-                      <p class="text-xs text-gray-500">${acc.zerodha_user_id}</p>
-                    </div>
-                    ${acc.id === state.account?.id ? '<i class="fas fa-check text-indigo-600"></i>' : ''}
-                  </button>
-                `).join('')}
+                <!-- User Info -->
+                <div class="px-4 py-3 border-b">
+                  <p class="text-sm font-medium text-gray-900">${state.user?.name || 'User'}</p>
+                  <p class="text-xs text-gray-500">${state.user?.email || ''}</p>
+                  ${state.user?.is_admin ? '<span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Admin</span>' : ''}
+                </div>
+                
+                <!-- Broker Accounts -->
+                ${state.brokerAccounts.length > 0 ? `
+                  <div class="py-2">
+                    <p class="px-4 text-xs text-gray-400 uppercase mb-1">Broker Accounts</p>
+                    ${state.brokerAccounts.map(acc => `
+                      <button onclick="switchBrokerAccount(${acc.id})" class="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center space-x-3 ${acc.id === activeBroker?.id ? 'bg-indigo-50' : ''}">
+                        <i class="fas ${acc.broker_type === 'zerodha' ? 'fa-chart-line text-indigo-600' : 'fa-chart-bar text-orange-600'}"></i>
+                        <div class="flex-1">
+                          <p class="text-sm font-medium">${acc.account_name}</p>
+                          <p class="text-xs text-gray-500">${acc.is_connected ? 'Connected' : 'Disconnected'}</p>
+                        </div>
+                        ${acc.id === activeBroker?.id ? '<i class="fas fa-check text-indigo-600"></i>' : ''}
+                      </button>
+                    `).join('')}
+                  </div>
+                ` : ''}
+                
                 <div class="border-t my-1"></div>
-                <button onclick="addNewAccount()" class="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center space-x-3 text-indigo-600">
+                <a href="/accounts" class="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center space-x-3 text-indigo-600">
                   <i class="fas fa-plus"></i>
-                  <span class="text-sm">Add Another Account</span>
+                  <span class="text-sm">Manage Broker Accounts</span>
+                </a>
+                <div class="border-t my-1"></div>
+                <button onclick="handleLogout()" class="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center space-x-3 text-red-600">
+                  <i class="fas fa-sign-out-alt"></i>
+                  <span class="text-sm">Logout</span>
                 </button>
               </div>
             </div>
-            
-            <button onclick="handleLogout()" class="text-gray-500 hover:text-gray-700">
-              <i class="fas fa-sign-out-alt"></i>
-            </button>
           </div>
         </div>
       </div>
@@ -1425,26 +1477,35 @@ function setView(view) {
 }
 
 function handleLogout() {
+  // Clear both session types
+  localStorage.removeItem('user_session_id');
   localStorage.removeItem('session_id');
-  api.post('/auth/logout');
+  api.post('/user/logout');
   window.location.href = '/';
 }
 
-async function switchAccount(accountId) {
-  const res = await api.post('/auth/switch-account', { account_id: accountId });
-  if (res?.success) {
-    await loadDashboardData();
-    const authRes = await api.get('/auth/status');
-    if (authRes?.success) {
-      state.account = authRes.data.account;
+// Switch active broker account for trading
+async function switchBrokerAccount(accountId) {
+  const account = state.brokerAccounts.find(acc => acc.id === accountId);
+  if (account) {
+    if (!account.is_connected) {
+      showNotification('Please connect this account first', 'warning');
+      window.location.href = '/accounts';
+      return;
     }
+    state.activeBrokerAccount = account;
     renderApp();
-    showNotification('Account switched successfully', 'success');
+    showNotification(`Switched to ${account.account_name}`, 'success');
   }
 }
 
+// Legacy function for backward compatibility
+async function switchAccount(accountId) {
+  return switchBrokerAccount(accountId);
+}
+
 function addNewAccount() {
-  showAddAccountModal();
+  window.location.href = '/accounts';
 }
 
 // Search functionality

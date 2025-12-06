@@ -18,18 +18,24 @@ An open-source, self-hostable platform for creating, managing, and investing in 
 
 ### Completed Features ✅
 
-1. **Multi-Broker Support**
-   - Zerodha Kite Connect API
-   - Angel One Smart API
+1. **User Authentication System**
+   - Email/Password signup and login
+   - First user automatically becomes admin
+   - Session management with KV storage
+   - Profile management
+
+2. **Multi-Broker Support**
+   - Zerodha Kite Connect API (OAuth)
+   - Angel One Smart API (TOTP)
    - Modular architecture for adding new brokers
    - Unified symbol format across brokers
 
-2. **Authentication & Multi-Account Support**
-   - OAuth login (Zerodha)
-   - TOTP-based login (Angel One)
-   - Multi-account management (family accounts)
-   - Session management with KV storage
-   - Secure API credential encryption
+3. **Broker Account Management**
+   - Add multiple broker accounts per user
+   - Connect/disconnect accounts
+   - TOTP-based authentication for Angel One
+   - OAuth flow for Zerodha
+   - Encrypted credential storage
 
 3. **Basket Management**
    - Create custom stock baskets (up to 20 stocks)
@@ -68,7 +74,23 @@ An open-source, self-hostable platform for creating, managing, and investing in 
 - `POST /api/setup/configure` - Save broker API credentials
 - `PUT /api/setup/default-broker` - Set default broker
 
-### Authentication
+### User Authentication
+- `GET /api/user/status` - Check user auth status
+- `POST /api/user/signup` - Create new account (first user = admin)
+- `POST /api/user/login` - Login with email/password
+- `POST /api/user/logout` - Clear session
+- `GET /api/user/profile` - Get user profile
+- `PUT /api/user/profile` - Update profile
+
+### Broker Accounts
+- `GET /api/broker-accounts` - List user's broker accounts
+- `POST /api/broker-accounts` - Add new broker account
+- `DELETE /api/broker-accounts/:id` - Remove broker account
+- `POST /api/broker-accounts/:id/connect` - Connect to broker (OAuth/TOTP)
+- `POST /api/broker-accounts/:id/disconnect` - Disconnect from broker
+- `GET /api/broker-accounts/active` - Get active connected account
+
+### Legacy Authentication (for backward compatibility)
 - `GET /api/auth/login` - Redirect to broker login
 - `GET /api/auth/callback` - OAuth callback handler
 - `GET /api/auth/status` - Check authentication status
@@ -129,16 +151,27 @@ pm2 start ecosystem.config.cjs
 6. **Run**: `npm run dev:sandbox`
 7. **Open**: http://localhost:3000
 
-### Configure API Credentials
+### User Flow
 
-**Via Web UI (Recommended):**
+**New User Setup:**
 1. Open http://localhost:3000
-2. Click "Setup Now"
-3. Select your broker (Zerodha or Angel One)
-4. Enter API credentials
-5. For Angel One, also enter Client Code
+2. Click "Sign Up" (first user becomes admin)
+3. Enter name, email, and password
+4. After signup, you'll be redirected to onboarding
+5. Add your first broker account (Zerodha or Angel One)
+6. Enter API credentials
+7. Click "Connect" to authenticate with your broker
+8. Start creating baskets!
 
-**Get credentials from:**
+**Adding Broker Accounts:**
+1. Go to `/accounts` page
+2. Click "Add Account"
+3. Select broker type (Zerodha or Angel One)
+4. Enter API credentials
+5. For Zerodha: Click Connect → OAuth redirect
+6. For Angel One: Enter TOTP code when prompted
+
+**Get API credentials from:**
 - Zerodha: https://developers.kite.trade
 - Angel One: https://smartapi.angelbroking.com
 
