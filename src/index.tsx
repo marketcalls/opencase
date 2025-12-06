@@ -1,5 +1,5 @@
 /**
- * StockBasket - Smallcase-like Stock Basket Platform
+ * OpenCase - Open Source Stock Basket Platform
  * Main Application Entry Point
  */
 
@@ -42,7 +42,7 @@ app.route('/api/instruments', instruments);
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    service: 'StockBasket',
+    service: 'OpenCase',
     timestamp: new Date().toISOString()
   });
 });
@@ -66,7 +66,7 @@ app.get('/', async (c) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StockBasket - Build Your Own Smallcase</title>
+    <title>OpenCase - Build Your Own Stock Baskets</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -82,15 +82,15 @@ app.get('/', async (c) => {
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center space-x-2">
-                    <i class="fas fa-layer-group text-2xl text-indigo-600"></i>
-                    <span class="text-xl font-bold text-gray-900">StockBasket</span>
+                    <i class="fas fa-briefcase text-2xl text-indigo-600"></i>
+                    <span class="text-xl font-bold text-gray-900">OpenCase</span>
                 </div>
                 <div class="flex items-center space-x-4">
                     <a href="/dashboard" class="text-gray-600 hover:text-indigo-600">
                         <i class="fas fa-chart-pie mr-1"></i> Dashboard
                     </a>
                     <button id="loginBtn" onclick="handleLogin()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
-                        <i class="fas fa-sign-in-alt mr-1"></i> Login with Zerodha
+                        <i class="fas fa-sign-in-alt mr-1"></i> Login
                     </button>
                 </div>
             </div>
@@ -132,7 +132,7 @@ app.get('/', async (c) => {
     <!-- Features Section -->
     <section id="features" class="py-16 bg-white">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <h2 class="text-3xl font-bold text-center text-gray-900 mb-12">Why StockBasket?</h2>
+            <h2 class="text-3xl font-bold text-center text-gray-900 mb-12">Why OpenCase?</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
                 <div class="text-center p-6 card-hover rounded-xl bg-gray-50">
                     <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -286,7 +286,7 @@ app.get('/', async (c) => {
     <!-- Footer -->
     <footer class="bg-gray-900 text-white py-8">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <p class="text-gray-400">StockBasket - Self-hosted stock basket platform</p>
+            <p class="text-gray-400">OpenCase - Open source stock basket platform</p>
             <p class="text-gray-500 text-sm mt-2">Not affiliated with Zerodha or Smallcase. Use at your own risk.</p>
         </div>
     </footer>
@@ -483,7 +483,7 @@ app.get('/dashboard', async (c) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - StockBasket</title>
+    <title>Dashboard - OpenCase</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>

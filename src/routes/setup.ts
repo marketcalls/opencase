@@ -172,7 +172,7 @@ setup.post('/configure', async (c) => {
     }
     
     // Use a default encryption key for zero-config setup
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     
     // Encrypt credentials
     const encryptedKey = await encrypt(apiKey, encryptionKey);
@@ -295,7 +295,7 @@ setup.get('/credentials', async (c) => {
   }
   
   try {
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     
     // Get app-level credentials
     const apiKeyConfig = await c.env.DB.prepare(
@@ -366,7 +366,7 @@ setup.put('/credentials', async (c) => {
       return c.json(errorResponse('INVALID_CREDENTIALS', 'Invalid API key format'), 400);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     const encryptedKey = await encrypt(kite_api_key, encryptionKey);
     const encryptedSecret = await encrypt(kite_api_secret, encryptionKey);
     
@@ -428,7 +428,7 @@ setup.post('/add-account', async (c) => {
       return c.json(errorResponse('INVALID_INPUT', 'Account name is required'), 400);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     let encryptedKey: string | null = null;
     let encryptedSecret: string | null = null;
     let loginApiKey: string;
@@ -549,7 +549,7 @@ setup.put('/update-account/:id', async (c) => {
       return c.json(errorResponse('NOT_FOUND', 'Account not found'), 404);
     }
     
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     const updateFields: string[] = [];
     const updateValues: any[] = [];
     

@@ -1,19 +1,19 @@
 {
-  "name": "stockbasket",
+  "name": "opencase",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:sandbox": "wrangler pages dev dist --d1=stockbasket-db --local --ip 0.0.0.0 --port 3000",
+    "dev:sandbox": "wrangler pages dev dist --d1=opencase-db --local --ip 0.0.0.0 --port 3000",
     "build": "vite build",
     "preview": "wrangler pages dev dist",
     "deploy": "npm run build && wrangler pages deploy dist",
-    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name stockbasket",
+    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name opencase",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "db:migrate:local": "wrangler d1 migrations apply stockbasket-db --local",
-    "db:migrate:prod": "wrangler d1 migrations apply stockbasket-db",
-    "db:seed": "wrangler d1 execute stockbasket-db --local --file=./seed.sql",
+    "db:migrate:local": "wrangler d1 migrations apply opencase-db --local",
+    "db:migrate:prod": "wrangler d1 migrations apply opencase-db",
+    "db:seed": "wrangler d1 execute opencase-db --local --file=./seed.sql",
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local",
-    "db:console:local": "wrangler d1 execute stockbasket-db --local",
+    "db:console:local": "wrangler d1 execute opencase-db --local",
     "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
   },
   "dependencies": {

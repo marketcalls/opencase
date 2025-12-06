@@ -175,7 +175,7 @@ baskets.get('/:id', async (c) => {
         ).bind(session.account_id).first<Account>();
         
         if (account?.access_token) {
-          const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+          const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
           let apiKey = c.env.KITE_API_KEY;
           let apiSecret = c.env.KITE_API_SECRET || '';
           

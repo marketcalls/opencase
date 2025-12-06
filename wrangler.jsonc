@@ -1,20 +1,20 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "stockbasket",
+  "name": "opencase",
   "compatibility_date": "2025-12-06",
   "pages_build_output_dir": "./dist",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "stockbasket-db",
+      "database_name": "opencase-db",
       "database_id": "local-dev-db"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "KV",
-      "id": "stockbasket-kv"
+      "id": "opencase-kv"
     }
   ],
   "vars": {

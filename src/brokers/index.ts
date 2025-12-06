@@ -50,7 +50,7 @@ export {
  * Default encryption key for credentials
  * In production, this should come from environment variables
  */
-export const DEFAULT_ENCRYPTION_KEY = 'stockbasket-default-key-32chars!';
+export const DEFAULT_ENCRYPTION_KEY = 'opencase-default-key-32chars!!!';
 
 /**
  * Broker-specific exchange mappings

@@ -1,5 +1,5 @@
 /**
- * Utility functions for StockBasket
+ * Utility functions for OpenCase
  */
 
 import type { ApiResponse } from '../types';

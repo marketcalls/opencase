@@ -47,7 +47,7 @@ async function getKiteClient(c: any, accountId: number): Promise<KiteClient | nu
   
   if (!account?.access_token) return null;
   
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'stockbasket-default-key-32chars!';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
   
   // Try account-specific credentials first
   if (account.kite_api_key && account.kite_api_secret) {

@@ -1,5 +1,5 @@
 /**
- * StockBasket Frontend Application
+ * OpenCase Frontend Application
  * Comprehensive dashboard for managing stock baskets with direct API order placement
  */
 
@@ -198,7 +198,7 @@ function renderNav() {
           <div class="flex items-center space-x-4">
             <a href="/" class="flex items-center space-x-2">
               <i class="fas fa-layer-group text-2xl text-indigo-600"></i>
-              <span class="text-xl font-bold text-gray-900">StockBasket</span>
+              <span class="text-xl font-bold text-gray-900">OpenCase</span>
             </a>
           </div>
           
