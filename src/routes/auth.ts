@@ -117,24 +117,124 @@ auth.get('/login', async (c) => {
 /**
  * GET /api/auth/callback
  * Handle Zerodha OAuth callback
+ * Now also supports new broker_accounts flow by looking up account by API key
  */
 auth.get('/callback', async (c) => {
   const requestToken = c.req.query('request_token');
   const status = c.req.query('status');
+  const apiKeyFromCallback = c.req.query('api_key'); // Zerodha includes this
   
   if (status === 'cancelled') {
-    return c.redirect('/?error=login_cancelled');
+    return c.redirect('/accounts?error=login_cancelled');
   }
   
   if (!requestToken) {
-    return c.redirect('/?error=no_request_token');
+    return c.redirect('/accounts?error=no_request_token');
   }
   
   try {
-    // Get API credentials
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+    
+    // First, check if there's a broker_account waiting for this callback
+    // Look up by API key stored in KV
+    let brokerAccountId: number | null = null;
+    if (apiKeyFromCallback) {
+      const storedAccountId = await c.env.KV.get(`broker_login:${apiKeyFromCallback}`);
+      if (storedAccountId) {
+        brokerAccountId = parseInt(storedAccountId);
+        await c.env.KV.delete(`broker_login:${apiKeyFromCallback}`);
+      }
+    }
+    
+    // If we found a broker_account, use the new flow
+    if (brokerAccountId) {
+      const brokerAccount = await c.env.DB.prepare(
+        'SELECT * FROM broker_accounts WHERE id = ? AND is_active = 1'
+      ).bind(brokerAccountId).first<any>();
+      
+      if (brokerAccount && brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
+        const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+        const apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
+        
+        // Exchange request token for access token
+        const kite = new KiteClient(apiKey, apiSecret);
+        const session = await kite.createSession(requestToken);
+        
+        // Update broker_account with session info
+        await c.env.DB.prepare(`
+          UPDATE broker_accounts SET
+            broker_user_id = ?,
+            access_token = ?,
+            refresh_token = ?,
+            token_expiry = datetime('now', '+1 day'),
+            is_connected = 1,
+            connection_status = 'connected',
+            last_connected_at = datetime('now'),
+            broker_name = ?,
+            broker_email = ?,
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          session.user_id,
+          session.access_token,
+          session.refresh_token || null,
+          session.user_name,
+          session.email || null,
+          brokerAccountId
+        ).run();
+        
+        return c.redirect('/accounts?success=connected');
+      }
+    }
+    
+    // Also try to find broker_account by matching API key
+    if (apiKeyFromCallback) {
+      const brokerAccounts = await c.env.DB.prepare(
+        'SELECT * FROM broker_accounts WHERE broker_type = ? AND is_active = 1'
+      ).bind('zerodha').all<any>();
+      
+      for (const acc of brokerAccounts.results) {
+        if (acc.api_key_encrypted) {
+          const decryptedKey = await decrypt(acc.api_key_encrypted, encryptionKey);
+          if (decryptedKey === apiKeyFromCallback) {
+            const apiSecret = await decrypt(acc.api_secret_encrypted, encryptionKey);
+            
+            // Exchange request token for access token
+            const kite = new KiteClient(apiKeyFromCallback, apiSecret);
+            const session = await kite.createSession(requestToken);
+            
+            // Update broker_account with session info
+            await c.env.DB.prepare(`
+              UPDATE broker_accounts SET
+                broker_user_id = ?,
+                access_token = ?,
+                refresh_token = ?,
+                token_expiry = datetime('now', '+1 day'),
+                is_connected = 1,
+                connection_status = 'connected',
+                last_connected_at = datetime('now'),
+                broker_name = ?,
+                broker_email = ?,
+                updated_at = datetime('now')
+              WHERE id = ?
+            `).bind(
+              session.user_id,
+              session.access_token,
+              session.refresh_token || null,
+              session.user_name,
+              session.email || null,
+              acc.id
+            ).run();
+            
+            return c.redirect('/accounts?success=connected');
+          }
+        }
+      }
+    }
+    
+    // Fall back to legacy app-level credentials flow
     let apiKey: string | undefined;
     let apiSecret: string | undefined;
-    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
     
     // Try app-level credentials first
     const keyConfig = await c.env.DB.prepare(
@@ -154,7 +254,7 @@ auth.get('/callback', async (c) => {
     }
     
     if (!apiKey || !apiSecret) {
-      return c.redirect('/?error=api_credentials_missing');
+      return c.redirect('/accounts?error=api_credentials_missing');
     }
     
     // Exchange request token for access token
@@ -228,7 +328,7 @@ auth.get('/callback', async (c) => {
     return c.redirect(`/dashboard?session_id=${sessionId}`);
   } catch (error) {
     console.error('Callback error:', error);
-    return c.redirect(`/?error=auth_failed&message=${encodeURIComponent(String(error))}`);
+    return c.redirect(`/accounts?error=auth_failed&message=${encodeURIComponent(String(error))}`);
   }
 });
 

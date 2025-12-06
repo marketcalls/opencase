@@ -216,17 +216,20 @@ brokerAccounts.post('/:id/connect', async (c) => {
       }
       
       const apiKey = await decrypt(account.api_key_encrypted, encryptionKey);
-      const kite = new KiteClient(apiKey, '');
-      const loginUrl = kite.getLoginUrl();
       
-      // Store account ID for callback
-      await c.env.KV.put(`broker_login:${accountId}`, String(accountId), { expirationTtl: 600 });
+      // Build login URL with redirect_uri containing account ID
+      // Note: The redirect_uri must match what's configured in Kite Connect app settings
+      const loginUrl = `https://kite.zerodha.com/connect/login?api_key=${apiKey}&v=3`;
+      
+      // Store account ID for callback - will be retrieved by request_token or session
+      await c.env.KV.put(`broker_login:${apiKey}`, String(accountId), { expirationTtl: 600 });
       
       return c.json(successResponse({
         broker_type: 'zerodha',
         login_url: loginUrl,
         account_id: accountId,
-        message: 'Redirecting to Zerodha login...'
+        message: 'Redirecting to Zerodha login...',
+        note: 'Make sure your Kite Connect redirect URL is set to: ' + new URL(c.req.url).origin + '/api/broker-accounts/zerodha/callback'
       }));
     } else if (account.broker_type === 'angelone') {
       // For Angel One, need TOTP from request body
@@ -330,8 +333,104 @@ brokerAccounts.post('/:id/disconnect', async (c) => {
 });
 
 /**
+ * GET /api/broker-accounts/zerodha/callback
+ * Handle Zerodha OAuth callback - finds account by stored API key mapping
+ */
+brokerAccounts.get('/zerodha/callback', async (c) => {
+  const requestToken = c.req.query('request_token');
+  const status = c.req.query('status');
+  const apiKey = c.req.query('api_key'); // Zerodha includes this in callback
+  
+  if (status === 'cancelled') {
+    return c.redirect('/accounts?error=login_cancelled');
+  }
+  
+  if (!requestToken) {
+    return c.redirect('/accounts?error=no_request_token');
+  }
+  
+  try {
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+    
+    // Try to find account ID from KV store (stored during connect)
+    let accountId: number | null = null;
+    if (apiKey) {
+      const storedAccountId = await c.env.KV.get(`broker_login:${apiKey}`);
+      if (storedAccountId) {
+        accountId = parseInt(storedAccountId);
+        await c.env.KV.delete(`broker_login:${apiKey}`);
+      }
+    }
+    
+    // If no account ID found, try to find by decrypting all Zerodha accounts
+    if (!accountId) {
+      const accounts = await c.env.DB.prepare(
+        'SELECT * FROM broker_accounts WHERE broker_type = ? AND is_active = 1'
+      ).bind('zerodha').all<BrokerAccount>();
+      
+      for (const acc of accounts.results) {
+        if (acc.api_key_encrypted) {
+          const decryptedKey = await decrypt(acc.api_key_encrypted, encryptionKey);
+          if (decryptedKey === apiKey) {
+            accountId = acc.id;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (!accountId) {
+      return c.redirect('/accounts?error=account_not_found');
+    }
+    
+    const account = await c.env.DB.prepare(
+      'SELECT * FROM broker_accounts WHERE id = ? AND is_active = 1'
+    ).bind(accountId).first<BrokerAccount>();
+    
+    if (!account || !account.api_key_encrypted || !account.api_secret_encrypted) {
+      return c.redirect('/accounts?error=account_not_found');
+    }
+    
+    const decryptedApiKey = await decrypt(account.api_key_encrypted, encryptionKey);
+    const apiSecret = await decrypt(account.api_secret_encrypted, encryptionKey);
+    
+    // Exchange request token for access token
+    const kite = new KiteClient(decryptedApiKey, apiSecret);
+    const brokerSession = await kite.createSession(requestToken);
+    
+    // Update account with session info
+    await c.env.DB.prepare(`
+      UPDATE broker_accounts SET
+        broker_user_id = ?,
+        access_token = ?,
+        refresh_token = ?,
+        token_expiry = datetime('now', '+1 day'),
+        is_connected = 1,
+        connection_status = 'connected',
+        last_connected_at = datetime('now'),
+        broker_name = ?,
+        broker_email = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      brokerSession.user_id,
+      brokerSession.access_token,
+      brokerSession.refresh_token || null,
+      brokerSession.user_name,
+      brokerSession.email || null,
+      accountId
+    ).run();
+    
+    return c.redirect('/accounts?success=connected');
+  } catch (error) {
+    console.error('Zerodha callback error:', error);
+    return c.redirect('/accounts?error=auth_failed');
+  }
+});
+
+/**
  * GET /api/broker-accounts/:id/callback
- * Handle Zerodha OAuth callback
+ * Handle Zerodha OAuth callback (legacy - with account ID in URL)
  */
 brokerAccounts.get('/:id/callback', async (c) => {
   const accountId = parseInt(c.req.param('id'));
