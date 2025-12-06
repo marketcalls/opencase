@@ -20,6 +20,6 @@
   ],
   "vars": {
     "KITE_API_KEY": "",
-    "KITE_REDIRECT_URL": "http://localhost:3000/api/auth/callback"
+    "KITE_REDIRECT_URL": "http://localhost:5173/api/auth/callback"
   }
 }
