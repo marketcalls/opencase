@@ -20,6 +20,7 @@ import type {
 } from '../types';
 import { successResponse, errorResponse, decrypt, calculatePercentageChange } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
+import { AngelOneClient, AngelOneOrder } from '../lib/angelone';
 
 const investments = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -43,13 +44,13 @@ investments.use('*', async (c, next) => {
 });
 
 /**
- * Helper to get KiteClient for a broker account (new architecture)
+ * Helper to get broker client for a broker account (new architecture)
  * Returns { client, brokerType } or null
  */
 async function getBrokerClient(
   c: any,
   brokerAccountId: number
-): Promise<{ client: KiteClient; brokerType: string } | null> {
+): Promise<{ client: KiteClient | AngelOneClient; brokerType: string } | null> {
   // Get broker account from new table
   const brokerAccount = await c.env.DB.prepare(
     'SELECT * FROM broker_accounts WHERE id = ? AND is_connected = 1 AND is_active = 1'
@@ -58,22 +59,25 @@ async function getBrokerClient(
   if (!brokerAccount?.access_token) return null;
 
   const brokerType = brokerAccount.broker_type || 'zerodha';
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
 
-  // Only Zerodha is supported for order placement currently
-  if (brokerType !== 'zerodha') {
+  if (brokerType === 'angelone') {
+    // AngelOne broker
+    if (brokerAccount.api_key_encrypted) {
+      const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+      return { client: new AngelOneClient(apiKey, brokerAccount.access_token), brokerType };
+    }
     return null;
   }
 
-  const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
-
-  // Get API credentials from broker account
+  // Zerodha broker
   if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
     const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
     const apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
     return { client: new KiteClient(apiKey, apiSecret, brokerAccount.access_token), brokerType };
   }
 
-  // Fall back to app config
+  // Fall back to app config for Zerodha
   const apiKeyConfig = await c.env.DB.prepare(
     "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
   ).first<{ config_value: string }>();
@@ -89,6 +93,76 @@ async function getBrokerClient(
   }
 
   return null;
+}
+
+/**
+ * Stock info with broker-specific details
+ */
+interface BrokerStockInfo {
+  token: string;
+  brokerSymbol: string;  // Broker-specific trading symbol
+  exchange: string;
+}
+
+/**
+ * Helper to get broker-specific stock info from master_instruments
+ * Returns token AND correct broker trading symbol for each stock
+ */
+async function getBrokerStockInfo(
+  c: any,
+  stocks: Array<{ trading_symbol: string; exchange: string }>,
+  brokerType: string
+): Promise<Record<string, BrokerStockInfo>> {
+  const stockInfoMap: Record<string, BrokerStockInfo> = {};
+
+  for (const stock of stocks) {
+    // Look up the instrument from master_instruments using the unified symbol
+    // Basket stocks use unified symbol format (TCS, INFY, RELIANCE)
+    // Query specifically for rows that have the broker's token (handles duplicate rows)
+    let query: string;
+
+    if (brokerType === 'angelone') {
+      query = `
+        SELECT symbol, exchange, angelone_token, angelone_trading_symbol
+        FROM master_instruments
+        WHERE symbol = ? AND exchange = ? AND angelone_token IS NOT NULL
+        LIMIT 1
+      `;
+    } else {
+      query = `
+        SELECT symbol, exchange, zerodha_token, zerodha_trading_symbol
+        FROM master_instruments
+        WHERE symbol = ? AND exchange = ? AND zerodha_token IS NOT NULL
+        LIMIT 1
+      `;
+    }
+
+    const instrument = await c.env.DB.prepare(query)
+      .bind(stock.trading_symbol, stock.exchange)
+      .first<any>();
+
+    if (instrument) {
+      const key = `${stock.exchange}:${stock.trading_symbol}`;
+
+      if (brokerType === 'angelone' && instrument.angelone_token) {
+        stockInfoMap[key] = {
+          token: instrument.angelone_token,
+          brokerSymbol: instrument.angelone_trading_symbol || stock.trading_symbol,
+          exchange: stock.exchange
+        };
+      } else if (brokerType === 'zerodha' && instrument.zerodha_token) {
+        stockInfoMap[key] = {
+          token: instrument.zerodha_token.toString(),
+          brokerSymbol: instrument.zerodha_trading_symbol || stock.trading_symbol,
+          exchange: stock.exchange
+        };
+      }
+    } else {
+      console.warn(`No instrument found for ${stock.trading_symbol} on ${stock.exchange} for ${brokerType}`);
+    }
+  }
+
+  return stockInfoMap;
 }
 
 /**
@@ -178,17 +252,53 @@ investments.get('/:id', async (c) => {
     const holdings = await c.env.DB.prepare(`
       SELECT * FROM investment_holdings WHERE investment_id = ?
     `).bind(investmentId).all<InvestmentHolding>();
-    
-    // Get live prices
-    const kite = await getKiteClient(c, session.account_id);
+
+    // Get active broker from header or find a connected broker account
+    const activeBrokerId = c.req.header('X-Active-Broker-ID');
+    const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
+    // Get live prices using broker client
+    let brokerClient: { client: KiteClient | AngelOneClient; brokerType: string } | null = null;
+    if (brokerAccountId) {
+      brokerClient = await getBrokerClient(c, brokerAccountId);
+    }
+
     let holdingsWithPrices = holdings.results;
     let currentValue = investment.current_value || investment.invested_amount;
-    
-    if (kite && holdings.results.length > 0) {
+
+    if (brokerClient && holdings.results.length > 0) {
       try {
-        const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
-        const quotes = await kite.getLTP(instruments);
-        
+        const { client, brokerType } = brokerClient;
+        let quotes: Record<string, { last_price: number }>;
+
+        if (brokerType === 'angelone') {
+          // Get broker-specific info for holdings
+          const brokerInfo = await getBrokerStockInfo(c, holdings.results, brokerType);
+          const angelClient = client as AngelOneClient;
+
+          const instrumentsWithTokens = holdings.results
+            .filter(h => brokerInfo[`${h.exchange}:${h.trading_symbol}`])
+            .map(h => {
+              const info = brokerInfo[`${h.exchange}:${h.trading_symbol}`];
+              return { exchange: h.exchange, tradingsymbol: info.brokerSymbol, symboltoken: info.token };
+            });
+
+          const rawQuotes = await angelClient.getLTP(instrumentsWithTokens);
+
+          // Map back to unified symbols
+          quotes = {};
+          for (const h of holdings.results) {
+            const info = brokerInfo[`${h.exchange}:${h.trading_symbol}`];
+            if (info && rawQuotes[`${h.exchange}:${info.brokerSymbol}`]) {
+              quotes[`${h.exchange}:${h.trading_symbol}`] = rawQuotes[`${h.exchange}:${info.brokerSymbol}`];
+            }
+          }
+        } else {
+          const kiteClient = client as KiteClient;
+          const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
+          quotes = await kiteClient.getLTP(instruments);
+        }
+
         currentValue = 0;
         holdingsWithPrices = holdings.results.map(holding => {
           const key = `${holding.exchange}:${holding.trading_symbol}`;
@@ -196,7 +306,7 @@ investments.get('/:id', async (c) => {
           const currentPrice = quote?.last_price || holding.current_price || holding.average_price;
           const value = holding.quantity * currentPrice;
           currentValue += value;
-          
+
           return {
             ...holding,
             current_price: currentPrice,
@@ -233,7 +343,7 @@ investments.get('/:id', async (c) => {
 
 /**
  * POST /api/investments/buy/:basketId
- * Buy a basket - directly places orders via Kite API
+ * Buy a basket - directly places orders via broker API (Zerodha or AngelOne)
  */
 investments.post('/buy/:basketId', async (c) => {
   const basketId = parseInt(c.req.param('basketId'));
@@ -276,30 +386,103 @@ investments.post('/buy/:basketId', async (c) => {
     const brokerClient = await getBrokerClient(c, brokerAccountId);
 
     if (!brokerClient) {
-      // Check if it's an unsupported broker
-      const brokerAccount = await c.env.DB.prepare(
-        'SELECT broker_type FROM broker_accounts WHERE id = ?'
-      ).bind(brokerAccountId).first<{ broker_type: string }>();
-
-      if (brokerAccount?.broker_type === 'angelone') {
-        return c.json(errorResponse('UNSUPPORTED_BROKER', 'Order placement for AngelOne is coming soon. Please use Zerodha for now.'), 400);
-      }
       return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to your broker first'), 401);
     }
 
-    const kite = brokerClient.client;
-    
-    // Get live prices
-    const instruments = stocks.results.map(s => `${s.exchange}:${s.trading_symbol}`);
-    const quotes = await kite.getLTP(instruments);
-    
-    // Calculate orders
-    const { orders, totalAmount, unusedAmount } = kite.calculateBasketOrders(
-      stocks.results,
-      quotes,
-      investment_amount
-    );
-    
+    const { client, brokerType } = brokerClient;
+    const isAngelOne = brokerType === 'angelone';
+
+    // Get broker-specific stock info (token + correct broker trading symbol)
+    const brokerStockInfo = await getBrokerStockInfo(c, stocks.results, brokerType);
+
+    // Check if we have info for all stocks
+    const stocksWithInfo = stocks.results.filter(s => brokerStockInfo[`${s.exchange}:${s.trading_symbol}`]);
+    const missingStocks = stocks.results.filter(s => !brokerStockInfo[`${s.exchange}:${s.trading_symbol}`]);
+
+    if (missingStocks.length > 0) {
+      console.warn('Missing broker info for stocks:', missingStocks.map(s => `${s.exchange}:${s.trading_symbol}`));
+    }
+
+    if (stocksWithInfo.length === 0) {
+      return c.json(errorResponse('NO_INSTRUMENTS', 'No instruments found in master contracts. Please download master contracts first.'), 400);
+    }
+
+    // Get live prices based on broker type
+    let quotes: Record<string, { last_price: number }>;
+
+    if (isAngelOne) {
+      const angelClient = client as AngelOneClient;
+      // Prepare instruments with broker-specific symbols and tokens
+      const instrumentsWithTokens = stocksWithInfo.map(s => {
+        const info = brokerStockInfo[`${s.exchange}:${s.trading_symbol}`];
+        return {
+          exchange: s.exchange,
+          tradingsymbol: info.brokerSymbol,
+          symboltoken: info.token
+        };
+      });
+
+      const rawQuotes = await angelClient.getLTP(instrumentsWithTokens);
+
+      // Map quotes back to unified symbol format for order calculation
+      quotes = {};
+      for (const stock of stocksWithInfo) {
+        const info = brokerStockInfo[`${stock.exchange}:${stock.trading_symbol}`];
+        const brokerKey = `${stock.exchange}:${info.brokerSymbol}`;
+        const unifiedKey = `${stock.exchange}:${stock.trading_symbol}`;
+
+        if (rawQuotes[brokerKey]) {
+          quotes[unifiedKey] = rawQuotes[brokerKey];
+        }
+      }
+    } else {
+      const kiteClient = client as KiteClient;
+      const instruments = stocksWithInfo.map(s => `${s.exchange}:${s.trading_symbol}`);
+      quotes = await kiteClient.getLTP(instruments);
+    }
+
+    // Calculate orders based on broker type
+    let orders: (KiteOrder | AngelOneOrder)[];
+    let totalAmount: number;
+    let unusedAmount: number;
+
+    if (isAngelOne) {
+      const angelClient = client as AngelOneClient;
+      // Build stocks array with broker-specific info
+      const stocksForOrders = stocksWithInfo.map(s => {
+        const info = brokerStockInfo[`${s.exchange}:${s.trading_symbol}`];
+        return {
+          trading_symbol: info.brokerSymbol,  // Use broker-specific symbol (TCS for BSE, INFY-EQ for NSE)
+          exchange: s.exchange,
+          weight_percentage: s.weight_percentage,
+          symbol_token: info.token
+        };
+      });
+
+      // Map quotes to broker symbol format for order calculation
+      const brokerQuotes: Record<string, { last_price: number }> = {};
+      for (const stock of stocksWithInfo) {
+        const info = brokerStockInfo[`${stock.exchange}:${stock.trading_symbol}`];
+        const unifiedKey = `${stock.exchange}:${stock.trading_symbol}`;
+        const brokerKey = `${stock.exchange}:${info.brokerSymbol}`;
+
+        if (quotes[unifiedKey]) {
+          brokerQuotes[brokerKey] = quotes[unifiedKey];
+        }
+      }
+
+      const result = angelClient.calculateBasketOrders(stocksForOrders, brokerQuotes, investment_amount);
+      orders = result.orders;
+      totalAmount = result.totalAmount;
+      unusedAmount = result.unusedAmount;
+    } else {
+      const kiteClient = client as KiteClient;
+      const result = kiteClient.calculateBasketOrders(stocksWithInfo, quotes, investment_amount);
+      orders = result.orders;
+      totalAmount = result.totalAmount;
+      unusedAmount = result.unusedAmount;
+    }
+
     if (orders.length === 0) {
       return c.json(errorResponse('INSUFFICIENT_AMOUNT', 'Investment amount too low to buy any stocks'), 400);
     }
@@ -313,22 +496,32 @@ investments.post('/buy/:basketId', async (c) => {
       INSERT INTO transactions (account_id, user_id, basket_id, transaction_type, total_amount, status, order_details)
       VALUES (?, ?, ?, 'BUY', ?, 'PENDING', ?)
     `).bind(legacyAccountId, session.user_id, basketId, totalAmount, JSON.stringify(orders)).run();
-    
+
     const transactionId = txResult.meta.last_row_id;
-    
+
     if (use_direct_api) {
-      // Place orders directly via Kite API
+      // Place orders directly via broker API
       try {
-        const orderResults = await kite.placeMultipleOrders(orders);
-        
+        let orderResults: Array<{ order: any; result: any | null; error: string | null }>;
+
+        if (isAngelOne) {
+          const angelClient = client as AngelOneClient;
+          orderResults = await angelClient.placeMultipleOrders(orders as AngelOneOrder[]);
+        } else {
+          const kiteClient = client as KiteClient;
+          orderResults = await kiteClient.placeMultipleOrders(orders as KiteOrder[]);
+        }
+
         const successfulOrders = orderResults.filter(r => r.result !== null);
         const failedOrders = orderResults.filter(r => r.error !== null);
-        
-        const orderIds = successfulOrders.map(r => r.result!.order_id);
-        
+
+        const orderIds = successfulOrders.map(r =>
+          isAngelOne ? r.result!.orderid : r.result!.order_id
+        );
+
         // Update transaction with order IDs
         await c.env.DB.prepare(`
-          UPDATE transactions SET 
+          UPDATE transactions SET
             kite_order_ids = ?,
             status = ?,
             error_message = ?
@@ -339,38 +532,41 @@ investments.post('/buy/:basketId', async (c) => {
           failedOrders.length > 0 ? JSON.stringify(failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error }))) : null,
           transactionId
         ).run();
-        
+
         if (successfulOrders.length > 0) {
           // Create investment record
           const actualAmount = successfulOrders.reduce((sum, o) => {
-            const key = `${o.order.exchange}:${o.order.tradingsymbol}`;
+            const tradingSymbol = o.order.tradingsymbol.replace('-EQ', '');
+            const key = `${o.order.exchange}:${tradingSymbol}`;
             return sum + (o.order.quantity * (quotes[key]?.last_price || 0));
           }, 0);
-          
+
           const invResult = await c.env.DB.prepare(`
             INSERT INTO investments (account_id, user_id, basket_id, invested_amount, current_value, status)
             VALUES (?, ?, ?, ?, ?, 'ACTIVE')
           `).bind(legacyAccountId, session.user_id, basketId, actualAmount, actualAmount).run();
-          
+
           const investmentId = invResult.meta.last_row_id;
-          
+
           // Get basket stocks for target weights
           const stockWeightMap: Record<string, number> = {};
           stocks.results.forEach(s => {
             stockWeightMap[`${s.exchange}:${s.trading_symbol}`] = s.weight_percentage;
           });
-          
+
           // Create holdings for successful orders
           for (const orderResult of successfulOrders) {
-            const key = `${orderResult.order.exchange}:${orderResult.order.tradingsymbol}`;
+            // Normalize trading symbol (remove -EQ suffix for storage)
+            const tradingSymbol = orderResult.order.tradingsymbol.replace('-EQ', '');
+            const key = `${orderResult.order.exchange}:${tradingSymbol}`;
             const price = quotes[key]?.last_price || 0;
-            
+
             await c.env.DB.prepare(`
               INSERT INTO investment_holdings (investment_id, trading_symbol, exchange, quantity, average_price, current_price, target_weight)
               VALUES (?, ?, ?, ?, ?, ?, ?)
             `).bind(
               investmentId,
-              orderResult.order.tradingsymbol,
+              tradingSymbol,
               orderResult.order.exchange,
               orderResult.order.quantity,
               price,
@@ -378,16 +574,16 @@ investments.post('/buy/:basketId', async (c) => {
               stockWeightMap[key] || 0
             ).run();
           }
-          
+
           // Update transaction
           await c.env.DB.prepare(`
-            UPDATE transactions SET 
+            UPDATE transactions SET
               investment_id = ?,
               status = 'COMPLETED',
               completed_at = datetime('now')
             WHERE id = ?
           `).bind(investmentId, transactionId).run();
-          
+
           return c.json(successResponse({
             transaction_id: transactionId,
             investment_id: investmentId,
@@ -396,10 +592,11 @@ investments.post('/buy/:basketId', async (c) => {
             orders_failed: failedOrders.length,
             total_amount: actualAmount,
             unused_amount: investment_amount - actualAmount,
+            broker_type: brokerType,
             failed_orders: failedOrders.map(f => ({ symbol: f.order.tradingsymbol, error: f.error })),
-            message: failedOrders.length > 0 
+            message: failedOrders.length > 0
               ? `Partially completed: ${successfulOrders.length} orders placed, ${failedOrders.length} failed`
-              : `Successfully placed ${successfulOrders.length} orders`
+              : `Successfully placed ${successfulOrders.length} orders via ${brokerType === 'angelone' ? 'AngelOne' : 'Zerodha'}`
           }));
         } else {
           return c.json(errorResponse('ORDER_FAILED', 'All orders failed: ' + failedOrders.map(f => f.error).join(', ')), 500);
@@ -529,84 +726,162 @@ investments.post('/:id/confirm-buy', async (c) => {
 
 /**
  * POST /api/investments/:id/sell
- * Sell investment holdings directly via API
+ * Sell investment holdings directly via API (supports both Zerodha and AngelOne)
  */
 investments.post('/:id/sell', async (c) => {
   const investmentId = parseInt(c.req.param('id'));
   const session = c.get('session') as SessionData;
-  
+
+  // Get active broker account ID from header
+  const activeBrokerId = c.req.header('X-Active-Broker-ID');
+  const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
+  if (!brokerAccountId) {
+    return c.json(errorResponse('NO_BROKER', 'Please select an active broker account'), 400);
+  }
+
   try {
     const { percentage = 100, use_direct_api = true } = await c.req.json<SellBasketRequest & { use_direct_api?: boolean }>();
-    
+
+    // Get a valid legacy account_id for foreign key constraint
+    const anyAccount = await c.env.DB.prepare('SELECT id FROM accounts LIMIT 1').first<{ id: number }>();
+    const legacyAccountId = anyAccount?.id || 1;
+
     const investment = await c.env.DB.prepare(`
-      SELECT * FROM investments WHERE id = ? AND account_id = ? AND status = 'ACTIVE'
-    `).bind(investmentId, session.account_id).first<Investment>();
-    
+      SELECT * FROM investments WHERE id = ? AND user_id = ? AND status = 'ACTIVE'
+    `).bind(investmentId, session.user_id).first<Investment>();
+
     if (!investment) {
       return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
     }
-    
+
     // Get holdings
     const holdings = await c.env.DB.prepare(
       'SELECT * FROM investment_holdings WHERE investment_id = ?'
     ).bind(investmentId).all<InvestmentHolding>();
-    
+
     if (holdings.results.length === 0) {
       return c.json(errorResponse('NO_HOLDINGS', 'No holdings to sell'), 400);
     }
-    
-    const kite = await getKiteClient(c, session.account_id);
-    if (!kite) {
-      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
+
+    // Get broker client using new architecture
+    const brokerClient = await getBrokerClient(c, brokerAccountId);
+    if (!brokerClient) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to your broker first'), 401);
     }
-    
-    // Get live prices
-    const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
-    const quotes = await kite.getLTP(instruments);
-    
+
+    const { client, brokerType } = brokerClient;
+    const isAngelOne = brokerType === 'angelone';
+
+    // Get broker-specific stock info for holdings
+    const brokerStockInfo = await getBrokerStockInfo(c, holdings.results, brokerType);
+
+    // Get live prices based on broker type
+    let quotes: Record<string, { last_price: number }>;
+
+    if (isAngelOne) {
+      const angelClient = client as AngelOneClient;
+      const instrumentsWithTokens = holdings.results
+        .filter(h => brokerStockInfo[`${h.exchange}:${h.trading_symbol}`])
+        .map(h => {
+          const info = brokerStockInfo[`${h.exchange}:${h.trading_symbol}`];
+          return {
+            exchange: h.exchange,
+            tradingsymbol: info.brokerSymbol,
+            symboltoken: info.token
+          };
+        });
+
+      const rawQuotes = await angelClient.getLTP(instrumentsWithTokens);
+
+      // Map quotes back to unified symbol format
+      quotes = {};
+      for (const holding of holdings.results) {
+        const info = brokerStockInfo[`${holding.exchange}:${holding.trading_symbol}`];
+        if (info) {
+          const brokerKey = `${holding.exchange}:${info.brokerSymbol}`;
+          const unifiedKey = `${holding.exchange}:${holding.trading_symbol}`;
+          if (rawQuotes[brokerKey]) {
+            quotes[unifiedKey] = rawQuotes[brokerKey];
+          }
+        }
+      }
+    } else {
+      const kiteClient = client as KiteClient;
+      const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
+      quotes = await kiteClient.getLTP(instruments);
+    }
+
     // Generate sell orders
-    const orders: KiteOrder[] = [];
+    const orders: (KiteOrder | AngelOneOrder)[] = [];
     let totalSellValue = 0;
-    
+
     for (const holding of holdings.results) {
       const sellQty = Math.floor(holding.quantity * (percentage / 100));
       if (sellQty > 0) {
         const key = `${holding.exchange}:${holding.trading_symbol}`;
         const price = quotes[key]?.last_price || holding.current_price || holding.average_price;
-        
-        orders.push({
-          variety: 'regular',
-          tradingsymbol: holding.trading_symbol,
-          exchange: holding.exchange,
-          transaction_type: 'SELL',
-          order_type: 'MARKET',
-          quantity: sellQty,
-          product: 'CNC'
-        });
-        
+
+        if (isAngelOne) {
+          const info = brokerStockInfo[key];
+          if (info) {
+            orders.push({
+              variety: 'NORMAL',
+              tradingsymbol: info.brokerSymbol,
+              symboltoken: info.token,
+              exchange: holding.exchange,
+              transaction_type: 'SELL',
+              order_type: 'MARKET',
+              quantity: sellQty,
+              product: 'CNC'
+            } as AngelOneOrder);
+          }
+        } else {
+          orders.push({
+            variety: 'regular',
+            tradingsymbol: holding.trading_symbol,
+            exchange: holding.exchange,
+            transaction_type: 'SELL',
+            order_type: 'MARKET',
+            quantity: sellQty,
+            product: 'CNC'
+          } as KiteOrder);
+        }
+
         totalSellValue += sellQty * price;
       }
     }
-    
+
     if (orders.length === 0) {
       return c.json(errorResponse('NO_SELLABLE', 'No sellable quantity'), 400);
     }
-    
+
     // Create transaction
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, ?, 'SELL', ?, 'PENDING', ?)
-    `).bind(session.account_id, investmentId, investment.basket_id, totalSellValue, JSON.stringify(orders)).run();
-    
+      INSERT INTO transactions (account_id, user_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, ?, 'SELL', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, investmentId, investment.basket_id, totalSellValue, JSON.stringify(orders)).run();
+
     const transactionId = txResult.meta.last_row_id;
-    
+
     if (use_direct_api) {
       // Place sell orders directly
       try {
-        const orderResults = await kite.placeMultipleOrders(orders);
+        let orderResults: Array<{ order: any; result: any | null; error: string | null }>;
+
+        if (isAngelOne) {
+          const angelClient = client as AngelOneClient;
+          orderResults = await angelClient.placeMultipleOrders(orders as AngelOneOrder[]);
+        } else {
+          const kiteClient = client as KiteClient;
+          orderResults = await kiteClient.placeMultipleOrders(orders as KiteOrder[]);
+        }
+
         const successfulOrders = orderResults.filter(r => r.result !== null);
         const failedOrders = orderResults.filter(r => r.error !== null);
-        const orderIds = successfulOrders.map(r => r.result!.order_id);
+        const orderIds = successfulOrders.map(r =>
+          isAngelOne ? r.result!.orderid : r.result!.order_id
+        );
         
         // Update transaction
         await c.env.DB.prepare(`
@@ -826,42 +1101,94 @@ investments.get('/:id/rebalance-preview', async (c) => {
 
 /**
  * POST /api/investments/:id/rebalance
- * Execute rebalancing orders directly via API
+ * Execute rebalancing orders directly via API (supports both Zerodha and AngelOne)
  */
 investments.post('/:id/rebalance', async (c) => {
   const investmentId = parseInt(c.req.param('id'));
   const session = c.get('session') as SessionData;
-  
+
+  // Get active broker account ID from header
+  const activeBrokerId = c.req.header('X-Active-Broker-ID');
+  const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
+  if (!brokerAccountId) {
+    return c.json(errorResponse('NO_BROKER', 'Please select an active broker account'), 400);
+  }
+
   try {
     const { threshold = 5, use_direct_api = true } = await c.req.json<{ threshold?: number; use_direct_api?: boolean }>();
-    
+
+    // Get a valid legacy account_id for foreign key constraint
+    const anyAccount = await c.env.DB.prepare('SELECT id FROM accounts LIMIT 1').first<{ id: number }>();
+    const legacyAccountId = anyAccount?.id || 1;
+
     const investment = await c.env.DB.prepare(`
-      SELECT * FROM investments WHERE id = ? AND account_id = ? AND status = 'ACTIVE'
-    `).bind(investmentId, session.account_id).first<Investment>();
-    
+      SELECT * FROM investments WHERE id = ? AND user_id = ? AND status = 'ACTIVE'
+    `).bind(investmentId, session.user_id).first<Investment>();
+
     if (!investment) {
       return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
     }
-    
-    const kite = await getKiteClient(c, session.account_id);
-    if (!kite) {
-      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login'), 401);
+
+    // Get broker client using new architecture
+    const brokerClient = await getBrokerClient(c, brokerAccountId);
+    if (!brokerClient) {
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to your broker first'), 401);
     }
-    
+
+    const { client, brokerType } = brokerClient;
+    const isAngelOne = brokerType === 'angelone';
+
     // Get holdings and calculate orders
     const holdings = await c.env.DB.prepare(
       'SELECT * FROM investment_holdings WHERE investment_id = ?'
     ).bind(investmentId).all<InvestmentHolding>();
-    
+
     const basketStocks = await c.env.DB.prepare(
       'SELECT * FROM basket_stocks WHERE basket_id = ?'
     ).bind(investment.basket_id).all<BasketStock>();
-    
-    const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
-    const quotes = await kite.getLTP(instruments);
-    
+
+    // Get broker-specific stock info for holdings
+    const brokerStockInfo = await getBrokerStockInfo(c, holdings.results, brokerType);
+
+    // Get live prices based on broker type
+    let quotes: Record<string, { last_price: number }>;
+
+    if (isAngelOne) {
+      const angelClient = client as AngelOneClient;
+      const instrumentsWithTokens = holdings.results
+        .filter(h => brokerStockInfo[`${h.exchange}:${h.trading_symbol}`])
+        .map(h => {
+          const info = brokerStockInfo[`${h.exchange}:${h.trading_symbol}`];
+          return {
+            exchange: h.exchange,
+            tradingsymbol: info.brokerSymbol,
+            symboltoken: info.token
+          };
+        });
+
+      const rawQuotes = await angelClient.getLTP(instrumentsWithTokens);
+
+      // Map quotes back to unified symbol format
+      quotes = {};
+      for (const holding of holdings.results) {
+        const info = brokerStockInfo[`${holding.exchange}:${holding.trading_symbol}`];
+        if (info) {
+          const brokerKey = `${holding.exchange}:${info.brokerSymbol}`;
+          const unifiedKey = `${holding.exchange}:${holding.trading_symbol}`;
+          if (rawQuotes[brokerKey]) {
+            quotes[unifiedKey] = rawQuotes[brokerKey];
+          }
+        }
+      }
+    } else {
+      const kiteClient = client as KiteClient;
+      const instruments = holdings.results.map(h => `${h.exchange}:${h.trading_symbol}`);
+      quotes = await kiteClient.getLTP(instruments);
+    }
+
     const holdingsWithTarget = holdings.results.map(h => {
-      const stock = basketStocks.results.find(s => 
+      const stock = basketStocks.results.find(s =>
         s.trading_symbol === h.trading_symbol && s.exchange === h.exchange
       );
       return {
@@ -869,42 +1196,92 @@ investments.post('/:id/rebalance', async (c) => {
         target_weight: stock?.weight_percentage || 0
       };
     });
-    
+
     let totalValue = 0;
     for (const h of holdings.results) {
       const key = `${h.exchange}:${h.trading_symbol}`;
       totalValue += h.quantity * (quotes[key]?.last_price || h.average_price);
     }
-    
-    const { orders, buyAmount, sellAmount } = kite.calculateRebalanceOrders(
-      holdingsWithTarget,
-      quotes,
-      totalValue,
-      threshold
-    );
-    
+
+    // Calculate rebalance orders based on broker type
+    let orders: (KiteOrder | AngelOneOrder)[];
+    let buyAmount: number;
+    let sellAmount: number;
+
+    if (isAngelOne) {
+      const angelClient = client as AngelOneClient;
+      // Build holdings with broker-specific info for AngelOne
+      const holdingsForRebalance = holdingsWithTarget
+        .filter(h => brokerStockInfo[`${h.exchange}:${h.trading_symbol}`])
+        .map(h => {
+          const info = brokerStockInfo[`${h.exchange}:${h.trading_symbol}`];
+          return {
+            trading_symbol: info.brokerSymbol,
+            exchange: h.exchange,
+            quantity: h.quantity,
+            target_weight: h.target_weight,
+            symbol_token: info.token
+          };
+        });
+
+      // Map quotes to broker symbol format for order calculation
+      const brokerQuotes: Record<string, { last_price: number }> = {};
+      for (const holding of holdings.results) {
+        const info = brokerStockInfo[`${holding.exchange}:${holding.trading_symbol}`];
+        if (info) {
+          const unifiedKey = `${holding.exchange}:${holding.trading_symbol}`;
+          const brokerKey = `${holding.exchange}:${info.brokerSymbol}`;
+          if (quotes[unifiedKey]) {
+            brokerQuotes[brokerKey] = quotes[unifiedKey];
+          }
+        }
+      }
+
+      const result = angelClient.calculateRebalanceOrders(holdingsForRebalance, brokerQuotes, totalValue, threshold);
+      orders = result.orders;
+      buyAmount = result.buyAmount;
+      sellAmount = result.sellAmount;
+    } else {
+      const kiteClient = client as KiteClient;
+      const result = kiteClient.calculateRebalanceOrders(holdingsWithTarget, quotes, totalValue, threshold);
+      orders = result.orders;
+      buyAmount = result.buyAmount;
+      sellAmount = result.sellAmount;
+    }
+
     if (orders.length === 0) {
       return c.json(successResponse({
         message: 'No rebalancing needed',
         rebalanced: false
       }));
     }
-    
+
     // Create transaction
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, ?, 'REBALANCE', ?, 'PENDING', ?)
-    `).bind(session.account_id, investmentId, investment.basket_id, buyAmount + sellAmount, JSON.stringify(orders)).run();
-    
+      INSERT INTO transactions (account_id, user_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, ?, 'REBALANCE', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, investmentId, investment.basket_id, buyAmount + sellAmount, JSON.stringify(orders)).run();
+
     const transactionId = txResult.meta.last_row_id;
-    
+
     if (use_direct_api) {
       // Place rebalance orders directly
       try {
-        const orderResults = await kite.placeMultipleOrders(orders);
+        let orderResults: Array<{ order: any; result: any | null; error: string | null }>;
+
+        if (isAngelOne) {
+          const angelClient = client as AngelOneClient;
+          orderResults = await angelClient.placeMultipleOrders(orders as AngelOneOrder[]);
+        } else {
+          const kiteClient = client as KiteClient;
+          orderResults = await kiteClient.placeMultipleOrders(orders as KiteOrder[]);
+        }
+
         const successfulOrders = orderResults.filter(r => r.result !== null);
         const failedOrders = orderResults.filter(r => r.error !== null);
-        const orderIds = successfulOrders.map(r => r.result!.order_id);
+        const orderIds = successfulOrders.map(r =>
+          isAngelOne ? r.result!.orderid : r.result!.order_id
+        );
         
         // Update transaction
         await c.env.DB.prepare(`

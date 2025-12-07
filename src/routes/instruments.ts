@@ -173,10 +173,18 @@ instruments.post('/download', async (c) => {
       colIndex[h.trim().toLowerCase()] = i;
     });
     
-    // Clear existing Zerodha instruments for NSE and BSE (keep AngelOne data if any)
+    // Clear existing Zerodha instruments for NSE, BSE, and indices (keep AngelOne data if any)
+    // Option 1: Delete rows that only have Zerodha data (no AngelOne data)
     await c.env.DB.prepare(
-      "DELETE FROM master_instruments WHERE exchange IN ('NSE', 'BSE') AND (source = 'zerodha' OR source IS NULL)"
+      "DELETE FROM master_instruments WHERE exchange IN ('NSE', 'BSE', 'NSE_INDEX', 'BSE_INDEX') AND source = 'zerodha' AND angelone_token IS NULL"
     ).run();
+
+    // Option 2: Clear Zerodha columns from rows that have both brokers' data
+    await c.env.DB.prepare(
+      "UPDATE master_instruments SET zerodha_token = NULL, zerodha_exchange_token = NULL, zerodha_trading_symbol = NULL, last_downloaded_from = 'angelone' WHERE exchange IN ('NSE', 'BSE', 'NSE_INDEX', 'BSE_INDEX') AND angelone_token IS NOT NULL"
+    ).run();
+
+    console.log('[Zerodha] Cleared existing Zerodha data');
     
     // Process and insert instruments (only NSE/BSE equity)
     let inserted = 0;
@@ -195,23 +203,49 @@ instruments.post('/download', async (c) => {
       const segment = values[colIndex['segment']]?.trim();
       const instrumentType = values[colIndex['instrument_type']]?.trim();
       
-      // Only include NSE and BSE equity instruments
-      if ((exchange === 'NSE' || exchange === 'BSE') && 
-          (segment === 'NSE' || segment === 'BSE') &&
+      // Only include NSE and BSE equity instruments (and indices)
+      if ((exchange === 'NSE' || exchange === 'BSE') &&
+          (segment === 'NSE' || segment === 'BSE' || segment === 'INDICES') &&
           (instrumentType === 'EQ' || segment === 'INDICES')) {
-        
+
+        const brokerSymbol = values[colIndex['tradingsymbol']]?.trim() || '';
+        // Unified symbol: for equity, tradingsymbol IS the unified symbol (Zerodha uses TCS, INFY)
+        const unifiedSymbol = brokerSymbol;
+
+        // Map exchange for indices (same as OpenAlgo)
+        let finalExchange = exchange;
+        if (segment === 'INDICES') {
+          if (exchange === 'NSE') finalExchange = 'NSE_INDEX';
+          else if (exchange === 'BSE') finalExchange = 'BSE_INDEX';
+        }
+
+        // For equity instruments, expiry and strike should be NULL
+        const instType = segment === 'INDICES' ? 'INDEX' : (instrumentType || 'EQ');
+        const isEquity = instType === 'EQ' || instType === 'INDEX';
+
+        // Only set expiry/strike for derivatives
+        const expiryVal = values[colIndex['expiry']]?.trim();
+        const strikeVal = parseFloat(values[colIndex['strike']]);
+        const expiry = (!isEquity && expiryVal) ? expiryVal : null;
+        const strike = (!isEquity && strikeVal > 0) ? strikeVal : null;
+
+        // Zerodha CSV has tick_size already in decimal (0.05), no division needed
+        const tickSize = parseFloat(values[colIndex['tick_size']]) || 0;
+        const lotSize = parseInt(values[colIndex['lot_size']]) || 1;
+
         batch.push({
           instrument_token: parseInt(values[colIndex['instrument_token']]) || 0,
           exchange_token: parseInt(values[colIndex['exchange_token']]) || 0,
-          trading_symbol: values[colIndex['tradingsymbol']]?.trim() || '',
+          trading_symbol: brokerSymbol,           // Original: RELIANCE, TCS, INFY
+          symbol: unifiedSymbol,                  // Unified: same as trading_symbol for Zerodha
           name: values[colIndex['name']]?.trim() || '',
-          exchange: exchange,
+          exchange: finalExchange,                // NSE, BSE, NSE_INDEX, BSE_INDEX
           segment: segment,
-          instrument_type: instrumentType || 'EQ',
-          tick_size: parseFloat(values[colIndex['tick_size']]) || 0.05,
-          lot_size: parseInt(values[colIndex['lot_size']]) || 1,
-          expiry: values[colIndex['expiry']]?.trim() || null,
-          strike: parseFloat(values[colIndex['strike']]) || null
+          instrument_type: instType,
+          tick_size: tickSize,                    // Already in decimal: 0.05, 0.01, etc.
+          lot_size: lotSize,
+          expiry: expiry,
+          strike: strike
         });
         
         if (batch.length >= batchSize) {
@@ -294,29 +328,66 @@ instruments.post('/download-angelone', async (c) => {
 
     console.log('[AngelOne] Filtered to', equityInstruments.length, 'NSE/BSE equity instruments');
 
+    // Clear existing AngelOne data before fresh download
+    // Option 1: Delete rows that only have AngelOne data (no Zerodha data)
+    await c.env.DB.prepare(
+      "DELETE FROM master_instruments WHERE exchange IN ('NSE', 'BSE', 'NSE_INDEX', 'BSE_INDEX', 'MCX_INDEX') AND source = 'angelone' AND zerodha_token IS NULL"
+    ).run();
+
+    // Option 2: Clear AngelOne columns from rows that have both brokers' data
+    await c.env.DB.prepare(
+      "UPDATE master_instruments SET angelone_token = NULL, angelone_trading_symbol = NULL, last_downloaded_from = 'zerodha' WHERE exchange IN ('NSE', 'BSE', 'NSE_INDEX', 'BSE_INDEX', 'MCX_INDEX') AND zerodha_token IS NOT NULL"
+    ).run();
+
+    console.log('[AngelOne] Cleared existing AngelOne data');
+
     // Process and insert instruments in batches
     let inserted = 0;
     const batchSize = 500;
     let batch: any[] = [];
 
     for (const inst of equityInstruments) {
-      // Clean symbol: remove -EQ, -BE, -MF, -SG suffixes
-      const symbol = (inst.symbol || '').replace(/-EQ$|-BE$|-MF$|-SG$/, '');
+      // Clean symbol: remove -EQ, -BE, -MF, -SG suffixes to get unified symbol
+      const unifiedSymbol = (inst.symbol || '').replace(/-EQ$|-BE$|-MF$|-SG$/, '');
+      const brokerSymbol = inst.symbol || '';  // Original broker symbol
+      const originalExchange = inst.exch_seg;
 
-      if (!symbol || !inst.token) continue;
+      if (!unifiedSymbol || !inst.token) continue;
+
+      // Map exchange for indices (same as OpenAlgo)
+      let exchange = originalExchange;
+      if (inst.instrumenttype === 'AMXIDX') {
+        if (originalExchange === 'NSE') exchange = 'NSE_INDEX';
+        else if (originalExchange === 'BSE') exchange = 'BSE_INDEX';
+        else if (originalExchange === 'MCX') exchange = 'MCX_INDEX';
+      }
+
+      // For equity instruments, expiry and strike should be NULL to match Zerodha
+      const instrumentType = inst.instrumenttype === 'AMXIDX' ? 'INDEX' : (inst.instrumenttype || 'EQ');
+      const isEquity = instrumentType === 'EQ' || instrumentType === 'INDEX' || instrumentType === '';
+
+      // Only set expiry/strike for derivatives (FUT, CE, PE, etc.)
+      const expiry = (!isEquity && inst.expiry) ? inst.expiry : null;
+      const strike = (!isEquity && inst.strike && parseFloat(inst.strike) > 0)
+        ? parseFloat(inst.strike) / 100
+        : null;
+
+      // AngelOne tick_size is in paise (5 = 0.05), divide by 100 as per OpenAlgo
+      const tickSize = parseFloat(inst.tick_size) / 100 || 0;
+      const lotSize = parseInt(inst.lotsize) || 1;
 
       batch.push({
-        symbol: symbol,
+        symbol: unifiedSymbol,                    // Unified: TCS, INFY, RELIANCE
         name: inst.name || '',
-        exchange: inst.exch_seg,
-        instrument_type: inst.instrumenttype === 'AMXIDX' ? 'INDEX' : (inst.instrumenttype || 'EQ'),
-        segment: inst.exch_seg,
-        tick_size: (parseFloat(inst.tick_size) || 5) / 100, // Divide by 100
-        lot_size: parseInt(inst.lotsize) || 1,
-        expiry: inst.expiry || null,
-        strike: inst.strike ? parseFloat(inst.strike) / 100 : null, // Divide by 100
+        exchange: exchange,                        // NSE, BSE, NSE_INDEX, BSE_INDEX
+        instrument_type: instrumentType,
+        segment: originalExchange,                 // Original segment
+        tick_size: tickSize,                       // Converted: 5 -> 0.05, 1 -> 0.01
+        lot_size: lotSize,
+        expiry: expiry,
+        strike: strike,
         angelone_token: inst.token,
-        angelone_trading_symbol: inst.symbol
+        angelone_trading_symbol: brokerSymbol      // Broker-specific: TCS-EQ, INFY-EQ, TCS
       });
 
       if (batch.length >= batchSize) {
@@ -430,8 +501,8 @@ async function insertInstrumentsBatch(db: D1Database, instruments: any[]): Promi
 
   // Build batch of prepared statements
   const statements = instruments.map(inst => {
-    // Extract base symbol from trading_symbol (e.g., "RELIANCE" from "RELIANCE" or "RELIANCE-EQ")
-    const symbol = inst.trading_symbol.replace(/-EQ$/, '');
+    // Use pre-computed unified symbol (already extracted in download logic)
+    const symbol = inst.symbol || inst.trading_symbol;
 
     return db.prepare(`
       INSERT INTO master_instruments (
@@ -446,22 +517,24 @@ async function insertInstrumentsBatch(db: D1Database, instruments: any[]): Promi
         zerodha_token = excluded.zerodha_token,
         zerodha_exchange_token = excluded.zerodha_exchange_token,
         zerodha_trading_symbol = excluded.zerodha_trading_symbol,
-        source = 'zerodha',
-        last_downloaded_from = 'zerodha',
+        last_downloaded_from = CASE
+          WHEN master_instruments.angelone_token IS NOT NULL THEN 'both'
+          ELSE 'zerodha'
+        END,
         updated_at = datetime('now')
     `).bind(
-      symbol,
+      symbol,                    // Unified symbol: TCS, INFY, RELIANCE
       inst.name,
-      inst.exchange,
+      inst.exchange,             // NSE, BSE, NSE_INDEX, BSE_INDEX
       inst.instrument_type,
       inst.segment,
       inst.tick_size,
       inst.lot_size,
       inst.expiry,
       inst.strike,
-      inst.instrument_token,
-      inst.exchange_token,
-      inst.trading_symbol
+      inst.instrument_token,     // Zerodha token
+      inst.exchange_token,       // Zerodha exchange token
+      inst.trading_symbol        // Broker symbol: same as unified for Zerodha
     );
   });
 
