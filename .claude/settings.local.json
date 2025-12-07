@@ -19,7 +19,13 @@
       "Bash(npm run build:*)",
       "Bash(npx wrangler d1 execute:*)",
       "Bash(dir:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.gnu.org)",
+      "Bash(copy \"D:\\AI Bootcamp 2025\\Session30\\opencase\\prompts\\openalgo-main\\License.md\" \"D:\\AI Bootcamp 2025\\Session30\\opencase\\LICENSE\")",
+      "Bash(copy \"D:\\AI Bootcamp 2025\\Session30\\opencase\\prompts\\openalgo-main\\CONTRIBUTING.md\" \"D:\\AI Bootcamp 2025\\Session30\\opencase\\CONTRIBUTING.md\")",
+      "Bash(copy:*)",
+      "Bash(cp:*)"
     ],
     "deny": [],
     "ask": []
