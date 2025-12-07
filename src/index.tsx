@@ -832,7 +832,7 @@ app.get('/accounts', async (c) => {
 <body class="bg-gray-100 min-h-screen">
     <!-- Navigation -->
     <nav class="bg-white shadow-sm sticky top-0 z-40">
-        <div class="max-w-7xl mx-auto px-4">
+        <div class="max-w-full mx-auto px-4">
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center space-x-4">
                     <a href="/dashboard" class="flex items-center space-x-2">
@@ -852,29 +852,81 @@ app.get('/accounts', async (c) => {
         </div>
     </nav>
 
-    <div class="max-w-4xl mx-auto p-6">
-        <div class="flex justify-between items-center mb-6">
-            <div>
-                <h1 class="text-2xl font-bold text-gray-900">Broker Accounts</h1>
-                <p class="text-gray-600">Manage your connected trading accounts</p>
-            </div>
-            <div class="flex items-center space-x-3">
-                <button onclick="disconnectAllBrokers()" id="disconnectAllBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200 transition">
-                    <i class="fas fa-unlink mr-2"></i>Disconnect All
-                </button>
-                <button onclick="showAddModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
-                    <i class="fas fa-plus mr-2"></i>Add Account
-                </button>
-            </div>
-        </div>
+    <div class="flex">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-white min-h-screen shadow-sm hidden md:block">
+            <nav class="p-4 space-y-1">
+                <a href="/dashboard" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-chart-pie w-5"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/dashboard#baskets" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-boxes w-5"></i>
+                    <span>My Baskets</span>
+                </a>
+                <a href="/dashboard#investments" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-wallet w-5"></i>
+                    <span>Investments</span>
+                </a>
+                <a href="/dashboard#holdings" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-hand-holding-usd w-5"></i>
+                    <span>Holdings</span>
+                </a>
+                <a href="/dashboard#explore" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-compass w-5"></i>
+                    <span>Explore</span>
+                </a>
+                <a href="/dashboard#sip" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-calendar-check w-5"></i>
+                    <span>SIP</span>
+                </a>
+                <a href="/dashboard#alerts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-bell w-5"></i>
+                    <span>Alerts</span>
+                </a>
+                <a href="/dashboard#orders" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-receipt w-5"></i>
+                    <span>Orders</span>
+                </a>
+                <div class="border-t my-3"></div>
+                <a href="/contracts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-database w-5"></i>
+                    <span>Master Contracts</span>
+                </a>
+                <a href="/accounts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition bg-indigo-50 text-indigo-600">
+                    <i class="fas fa-cog w-5"></i>
+                    <span>Broker Accounts</span>
+                </a>
+            </nav>
+        </aside>
 
-        <!-- Accounts List -->
-        <div id="accountsList" class="space-y-4">
-            <div class="text-center py-12">
-                <i class="fas fa-spinner fa-spin text-3xl text-indigo-600"></i>
-                <p class="text-gray-500 mt-2">Loading accounts...</p>
+        <!-- Main Content -->
+        <main class="flex-1 p-6 bg-gray-100 min-h-screen">
+            <div class="max-w-4xl mx-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <div>
+                        <h1 class="text-2xl font-bold text-gray-900">Broker Accounts</h1>
+                        <p class="text-gray-600">Manage your connected trading accounts</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <button onclick="disconnectAllBrokers()" id="disconnectAllBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200 transition">
+                            <i class="fas fa-unlink mr-2"></i>Disconnect All
+                        </button>
+                        <button onclick="showAddModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+                            <i class="fas fa-plus mr-2"></i>Add Account
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Accounts List -->
+                <div id="accountsList" class="space-y-4">
+                    <div class="text-center py-12">
+                        <i class="fas fa-spinner fa-spin text-3xl text-indigo-600"></i>
+                        <p class="text-gray-500 mt-2">Loading accounts...</p>
+                    </div>
+                </div>
             </div>
-        </div>
+        </main>
     </div>
 
     <!-- Add Account Modal -->
@@ -1404,7 +1456,7 @@ app.get('/contracts', async (c) => {
 <body class="bg-gray-100 min-h-screen">
     <!-- Navigation -->
     <nav class="bg-white shadow-sm sticky top-0 z-40">
-        <div class="max-w-7xl mx-auto px-4">
+        <div class="max-w-full mx-auto px-4">
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center space-x-4">
                     <a href="/dashboard" class="flex items-center space-x-2">
@@ -1416,9 +1468,6 @@ app.get('/contracts', async (c) => {
                     <a href="/dashboard" class="text-gray-600 hover:text-indigo-600">
                         <i class="fas fa-chart-pie mr-1"></i> Dashboard
                     </a>
-                    <a href="/accounts" class="text-gray-600 hover:text-indigo-600">
-                        <i class="fas fa-wallet mr-1"></i> Accounts
-                    </a>
                     <button onclick="handleLogout()" class="text-gray-500 hover:text-gray-700">
                         <i class="fas fa-sign-out-alt"></i> Logout
                     </button>
@@ -1427,14 +1476,64 @@ app.get('/contracts', async (c) => {
         </div>
     </nav>
 
-    <div class="max-w-6xl mx-auto p-6">
-        <div class="mb-6">
-            <h1 class="text-2xl font-bold text-gray-900">Master Contracts</h1>
-            <p class="text-gray-600">Download and manage instrument data from brokers</p>
-        </div>
+    <div class="flex">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-white min-h-screen shadow-sm hidden md:block">
+            <nav class="p-4 space-y-1">
+                <a href="/dashboard" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-chart-pie w-5"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/dashboard#baskets" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-boxes w-5"></i>
+                    <span>My Baskets</span>
+                </a>
+                <a href="/dashboard#investments" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-wallet w-5"></i>
+                    <span>Investments</span>
+                </a>
+                <a href="/dashboard#holdings" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-hand-holding-usd w-5"></i>
+                    <span>Holdings</span>
+                </a>
+                <a href="/dashboard#explore" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-compass w-5"></i>
+                    <span>Explore</span>
+                </a>
+                <a href="/dashboard#sip" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-calendar-check w-5"></i>
+                    <span>SIP</span>
+                </a>
+                <a href="/dashboard#alerts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-bell w-5"></i>
+                    <span>Alerts</span>
+                </a>
+                <a href="/dashboard#orders" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-receipt w-5"></i>
+                    <span>Orders</span>
+                </a>
+                <div class="border-t my-3"></div>
+                <a href="/contracts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition bg-indigo-50 text-indigo-600">
+                    <i class="fas fa-database w-5"></i>
+                    <span>Master Contracts</span>
+                </a>
+                <a href="/accounts" class="w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition text-gray-600 hover:bg-gray-50">
+                    <i class="fas fa-cog w-5"></i>
+                    <span>Broker Accounts</span>
+                </a>
+            </nav>
+        </aside>
 
-        <!-- Stats Grid -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <!-- Main Content -->
+        <main class="flex-1 p-6 bg-gray-100 min-h-screen">
+            <div class="max-w-5xl">
+                <div class="mb-6">
+                    <h1 class="text-2xl font-bold text-gray-900">Master Contracts</h1>
+                    <p class="text-gray-600">Download and manage instrument data from brokers</p>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             <div class="stat-card bg-white rounded-xl p-4 shadow-sm">
                 <div class="flex items-center justify-between">
                     <div>
@@ -1591,6 +1690,8 @@ app.get('/contracts', async (c) => {
                 <li><i class="fas fa-check mr-2"></i>Download both to enable trading with either broker</li>
             </ul>
         </div>
+            </div>
+        </main>
     </div>
 
     <!-- Notification -->
