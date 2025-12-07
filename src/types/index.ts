@@ -12,6 +12,12 @@ export interface Bindings {
   // Common
   ENCRYPTION_KEY?: string;
   DEFAULT_BROKER?: 'zerodha' | 'angelone';
+  // Token cleanup configuration
+  TOKEN_CLEANUP_ENABLED?: string;
+  TOKEN_CLEANUP_TIME?: string;      // User-friendly time like "03:00"
+  TOKEN_CLEANUP_TIMEZONE?: string;  // Timezone like "Asia/Kolkata"
+  TOKEN_EXPIRY_HOURS?: string;
+  SESSION_EXPIRY_DAYS?: string;     // Session expiry in days (default: 60)
 }
 
 // Variables type for Hono
@@ -499,13 +505,10 @@ export interface ApiResponse<T> {
 
 // Session data stored in KV
 export interface SessionData {
-  account_id: number;
-  zerodha_user_id: string;           // Legacy: broker user ID
-  broker_user_id?: string;           // Unified broker user ID
-  broker_type: BrokerType;
-  access_token: string;
-  name: string | null;
+  user_id: number;                   // User ID from users table
   email: string | null;
+  name: string | null;
+  is_admin?: boolean;
   expires_at: number;
 }
 

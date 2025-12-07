@@ -1,0 +1,26 @@
+# OpenCase Configuration
+# User-friendly settings for scheduled tasks
+
+# Token Cleanup Settings
+# Automatically disconnect all broker accounts at specified time
+# (Broker tokens like Zerodha/Angel One expire after ~24 hours)
+tokenCleanup:
+  enabled: true
+
+  # Time to run cleanup (24-hour format)
+  # Examples: "03:00", "00:30", "23:45"
+  time: "10:56"
+
+  # Your timezone
+  # Examples: "Asia/Kolkata", "America/New_York", "Europe/London", "UTC"
+  timezone: "Asia/Kolkata"
+
+# Session Settings
+session:
+  # User session expiry in days
+  expiryDays: 60
+
+# Broker Token Settings
+broker:
+  # Hours after which broker tokens expire
+  tokenExpiryHours: 24

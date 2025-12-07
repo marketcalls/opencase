@@ -35,10 +35,11 @@ const api = {
   async request(endpoint, options = {}) {
     const headers = {
       'Content-Type': 'application/json',
-      ...(state.sessionId && { 'X-Session-ID': state.sessionId })
+      ...(state.sessionId && { 'X-Session-ID': state.sessionId }),
+      ...(state.activeBrokerAccount && { 'X-Active-Broker-ID': state.activeBrokerAccount.id.toString() })
     };
 
-    console.log('[DEBUG] API request:', endpoint, 'with X-Session-ID:', state.sessionId ? state.sessionId.substring(0, 10) + '...' : 'null');
+    console.log('[DEBUG] API request:', endpoint, 'with X-Session-ID:', state.sessionId ? state.sessionId.substring(0, 10) + '...' : 'null', 'X-Active-Broker-ID:', state.activeBrokerAccount?.id || 'null');
 
     try {
       const response = await fetch(`/api${endpoint}`, {
@@ -725,7 +726,7 @@ function renderCreateBasket() {
               <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-100">
                 Cancel
               </button>
-              <button type="submit" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center" ${state.basketStocks.length === 0 ? 'disabled' : ''}>
+              <button type="submit" onclick="console.log('[DEBUG] Create Basket button clicked')" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center" ${state.basketStocks.length === 0 ? 'disabled' : ''}>
                 <i class="fas fa-save mr-2"></i>Create Basket
               </button>
             </div>
@@ -955,15 +956,25 @@ function updateBasketDisplay() {
   if (stocksContainer && state.basketStocks.length > 0) {
     stocksContainer.innerHTML = renderStocksTable();
   }
-  
+
   // Update totals
   updateWeightDisplay();
-  
+
   // Update minimum investment
   const minInvestment = calculateMinInvestment();
   const minDisplay = document.getElementById('minInvestmentDisplay');
   if (minDisplay) {
     minDisplay.textContent = formatCurrency(minInvestment);
+  }
+
+  // Update submit button disabled state
+  const submitBtn = document.querySelector('#createBasketForm button[type="submit"]');
+  if (submitBtn) {
+    if (state.basketStocks.length === 0) {
+      submitBtn.setAttribute('disabled', 'disabled');
+    } else {
+      submitBtn.removeAttribute('disabled');
+    }
   }
 }
 
@@ -1489,15 +1500,22 @@ function renderModals() {
 
 // Event handlers
 function setView(view) {
+  console.log('[DEBUG] setView called with:', view);
+
+  // Clear basket stocks BEFORE rendering create-basket view
+  if (view === 'create-basket') {
+    state.basketStocks = [];
+  }
+
   state.currentView = view;
+  console.log('[DEBUG] state.currentView is now:', state.currentView);
   renderApp();
-  
+  console.log('[DEBUG] renderApp completed');
+
   if (view === 'explore') {
     loadTemplates();
   } else if (view === 'orders') {
     loadOrders();
-  } else if (view === 'create-basket') {
-    state.basketStocks = [];
   }
 }
 
@@ -1573,11 +1591,13 @@ function renderSearchResults() {
 }
 
 function addStock(stock) {
+  console.log('[DEBUG] addStock called with:', stock);
+
   if (state.basketStocks.length >= 20) {
     showNotification('Maximum 20 stocks allowed', 'warning');
     return;
   }
-  
+
   const tradingSymbol = stock.trading_symbol || stock.symbol;
   if (state.basketStocks.find(s => (s.trading_symbol || s.symbol) === tradingSymbol && s.exchange === stock.exchange)) {
     showNotification('Stock already added', 'warning');
@@ -1591,7 +1611,8 @@ function addStock(stock) {
   
   stock.weight_percentage = 0;
   state.basketStocks.push(stock);
-  
+  console.log('[DEBUG] Stock added. state.basketStocks now:', state.basketStocks.length, 'stocks');
+
   // Apply equal weights or redistribute in custom mode
   if (state.weightingScheme === 'equal') {
     applyEqualWeights();
@@ -1754,20 +1775,28 @@ function updateWeightDisplay() {
 
 async function handleCreateBasket(e) {
   e.preventDefault();
-  
+  console.log('[DEBUG] handleCreateBasket called');
+  console.log('[DEBUG] state.basketStocks:', state.basketStocks);
+  console.log('[DEBUG] state.basketStocks.length:', state.basketStocks.length);
+
   if (state.basketStocks.length === 0) {
+    console.log('[DEBUG] No stocks in basket');
     showNotification('Please add at least one stock', 'warning');
     return;
   }
-  
+
   const totalWeight = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
+  console.log('[DEBUG] totalWeight:', totalWeight);
   if (Math.abs(totalWeight - 100) > 0.1) {
+    console.log('[DEBUG] Weight validation failed');
     showNotification('Total weight must equal 100%', 'warning');
     return;
   }
-  
+
   const basketName = document.getElementById('basketName').value;
+  console.log('[DEBUG] basketName:', basketName);
   if (!basketName || basketName.trim() === '') {
+    console.log('[DEBUG] No basket name');
     showNotification('Please enter a basket name', 'warning');
     return;
   }

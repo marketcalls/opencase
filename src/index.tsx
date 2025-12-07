@@ -51,6 +51,64 @@ app.get('/api/health', (c) => {
   });
 });
 
+// Manual trigger for token cleanup (for testing)
+// POST /api/admin/cleanup-tokens
+app.post('/api/admin/cleanup-tokens', async (c) => {
+  // Check for admin session
+  const sessionId = c.req.header('X-Session-ID');
+  if (sessionId) {
+    const session = await c.env.KV.get(`user:${sessionId}`, 'json') as { is_admin?: boolean } | null;
+    if (!session?.is_admin) {
+      return c.json({ success: false, error: 'Admin access required' }, 403);
+    }
+  } else {
+    return c.json({ success: false, error: 'Authentication required' }, 401);
+  }
+
+  try {
+    // Get all connected broker accounts
+    const connectedAccounts = await c.env.DB.prepare(`
+      SELECT id, broker_type, account_name, broker_user_id
+      FROM broker_accounts
+      WHERE is_connected = 1 AND is_active = 1
+    `).all<{ id: number; broker_type: string; account_name: string; broker_user_id: string | null }>();
+
+    let disconnected = 0;
+    const results: Array<{ id: number; account_name: string; status: string }> = [];
+
+    for (const account of connectedAccounts.results) {
+      try {
+        await c.env.DB.prepare(`
+          UPDATE broker_accounts SET
+            access_token = NULL,
+            refresh_token = NULL,
+            feed_token = NULL,
+            is_connected = 0,
+            connection_status = 'disconnected',
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(account.id).run();
+
+        disconnected++;
+        results.push({ id: account.id, account_name: account.account_name, status: 'disconnected' });
+      } catch (err) {
+        results.push({ id: account.id, account_name: account.account_name, status: 'error' });
+      }
+    }
+
+    return c.json({
+      success: true,
+      message: `Disconnected ${disconnected} broker accounts`,
+      disconnected,
+      total: connectedAccounts.results.length,
+      results,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    return c.json({ success: false, error: (error as Error).message }, 500);
+  }
+});
+
 // Landing Page - New User Flow with Signup/Login
 app.get('/', async (c) => {
   // Check if app needs initial setup (no users exist)
@@ -800,9 +858,14 @@ app.get('/accounts', async (c) => {
                 <h1 class="text-2xl font-bold text-gray-900">Broker Accounts</h1>
                 <p class="text-gray-600">Manage your connected trading accounts</p>
             </div>
-            <button onclick="showAddModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
-                <i class="fas fa-plus mr-2"></i>Add Account
-            </button>
+            <div class="flex items-center space-x-3">
+                <button onclick="disconnectAllBrokers()" id="disconnectAllBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200 transition">
+                    <i class="fas fa-unlink mr-2"></i>Disconnect All
+                </button>
+                <button onclick="showAddModal()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+                    <i class="fas fa-plus mr-2"></i>Add Account
+                </button>
+            </div>
         </div>
 
         <!-- Accounts List -->
@@ -1234,11 +1297,37 @@ app.get('/accounts', async (c) => {
             }
         }
         
+        async function disconnectAllBrokers() {
+            const btn = document.getElementById('disconnectAllBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Disconnecting...';
+
+            try {
+                const res = await fetch('/api/admin/cleanup-tokens', {
+                    method: 'POST',
+                    headers: { 'X-Session-ID': sessionId }
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showNotification(data.message || 'All brokers disconnected', 'success');
+                    loadAccounts();
+                } else {
+                    showNotification(data.error || 'Failed to disconnect', 'error');
+                }
+            } catch (e) {
+                showNotification('Error disconnecting brokers', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-unlink mr-2"></i>Disconnect All';
+            }
+        }
+
         function handleLogout() {
             localStorage.removeItem('user_session_id');
             window.location.href = '/?success=logged_out';
         }
-        
+
         function showNotification(message, type = 'info') {
             const colors = { success: 'bg-green-500', error: 'bg-red-500', info: 'bg-blue-500' };
             const notification = document.createElement('div');
@@ -1697,4 +1786,10 @@ app.get('/contracts', async (c) => {
   `);
 });
 
-export default app;
+// Scheduled handler for cron triggers
+import { handleScheduled } from './scheduled';
+
+export default {
+  fetch: app.fetch,
+  scheduled: handleScheduled,
+};

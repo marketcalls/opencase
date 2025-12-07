@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:sandbox": "wrangler pages dev dist --d1=opencase-db --kv=KV --local --ip 0.0.0.0 --port 5173",
+    "dev:sandbox": "wrangler pages dev dist --d1=opencase-db --kv=KV --local --ip 0.0.0.0 --port 3000",
     "build": "vite build",
     "preview": "wrangler pages dev dist",
     "deploy": "npm run build && wrangler pages deploy dist",

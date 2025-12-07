@@ -479,15 +479,50 @@ instruments.get('/search', async (c) => {
   const limit = parseInt(c.req.query('limit') || '20');
   const withLtp = c.req.query('with_ltp') === 'true';
   const sessionId = c.req.header('X-Session-ID');
-  
+
   if (!query || query.length < 1) {
     return c.json(successResponse([]));
   }
-  
+
   try {
-    // Use unified schema columns: symbol, zerodha_trading_symbol
+    // Determine which broker is selected (from X-Active-Broker-ID header)
+    let activeBroker: 'zerodha' | 'angelone' | null = null;
+    let userSession: UserSession | null = null;
+    let activeBrokerAccountId = c.req.header('X-Active-Broker-ID');
+
+    if (sessionId) {
+      userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
+      if (userSession && userSession.expires_at > Date.now()) {
+        // Use the specifically selected broker account if provided
+        if (activeBrokerAccountId) {
+          const selectedBroker = await c.env.DB.prepare(`
+            SELECT broker_type FROM broker_accounts
+            WHERE id = ? AND user_id = ? AND is_connected = 1 AND is_active = 1
+          `).bind(parseInt(activeBrokerAccountId), userSession.user_id).first<{ broker_type: string }>();
+
+          if (selectedBroker) {
+            activeBroker = selectedBroker.broker_type as 'zerodha' | 'angelone';
+          }
+        }
+
+        // Fallback: if no specific broker selected, use most recently connected
+        if (!activeBroker) {
+          const connectedBroker = await c.env.DB.prepare(`
+            SELECT broker_type FROM broker_accounts
+            WHERE user_id = ? AND is_connected = 1 AND is_active = 1
+            ORDER BY last_connected_at DESC LIMIT 1
+          `).bind(userSession.user_id).first<{ broker_type: string }>();
+
+          if (connectedBroker) {
+            activeBroker = connectedBroker.broker_type as 'zerodha' | 'angelone';
+          }
+        }
+      }
+    }
+
+    // Build query based on connected broker
     let sql = `
-      SELECT 
+      SELECT
         id, symbol, name, exchange, instrument_type, segment, tick_size, lot_size, expiry, strike,
         zerodha_token, zerodha_exchange_token, zerodha_trading_symbol,
         angelone_token, angelone_trading_symbol,
@@ -498,42 +533,47 @@ instruments.get('/search', async (c) => {
         zerodha_exchange_token as exchange_token,
         COALESCE(zerodha_trading_symbol, symbol) as trading_symbol
       FROM master_instruments
-      WHERE (symbol LIKE ? OR zerodha_trading_symbol LIKE ? OR name LIKE ?)
+      WHERE (symbol LIKE ? OR zerodha_trading_symbol LIKE ? OR angelone_trading_symbol LIKE ? OR name LIKE ?)
         AND instrument_type = 'EQ'
     `;
-    const params: any[] = [`${query}%`, `${query}%`, `%${query}%`];
-    
+    const params: any[] = [`${query}%`, `${query}%`, `${query}%`, `%${query}%`];
+
+    // Filter by broker if connected - only show instruments with tokens for that broker
+    if (activeBroker === 'zerodha') {
+      sql += ' AND zerodha_token IS NOT NULL';
+    } else if (activeBroker === 'angelone') {
+      sql += ' AND angelone_token IS NOT NULL';
+    }
+
     if (exchange) {
       sql += ' AND exchange = ?';
       params.push(exchange);
     } else {
       sql += ' AND exchange IN ("NSE", "BSE")';
     }
-    
+
     sql += ' ORDER BY CASE WHEN symbol = ? THEN 0 WHEN symbol LIKE ? THEN 1 ELSE 2 END, symbol LIMIT ?';
     params.push(query, `${query}%`, limit);
-    
+
     const results = await c.env.DB.prepare(sql).bind(...params).all<MasterInstrument>();
     let instrumentsWithLtp = results.results;
     
     // Fetch LTP if requested and authenticated
-    if (withLtp && sessionId && results.results.length > 0) {
-      const userSession = await c.env.KV.get(`user:${sessionId}`, 'json') as UserSession | null;
-      
-      if (userSession && userSession.expires_at > Date.now()) {
+    if (withLtp && userSession && activeBroker && results.results.length > 0) {
+      if (activeBroker === 'zerodha') {
         const kite = await getAuthenticatedKiteClient(c, userSession.user_id);
-        
+
         if (kite) {
           try {
             // Use zerodha_trading_symbol for Kite API calls
             const symbols = results.results.map(i => {
-              const tradingSymbol = (i as any).zerodha_trading_symbol || (i as any).trading_symbol || i.symbol;
+              const tradingSymbol = (i as any).zerodha_trading_symbol || i.symbol;
               return `${i.exchange}:${tradingSymbol}`;
             });
             const ltpData = await kite.getLTP(symbols);
-            
+
             instrumentsWithLtp = results.results.map(inst => {
-              const tradingSymbol = (inst as any).zerodha_trading_symbol || (inst as any).trading_symbol || inst.symbol;
+              const tradingSymbol = (inst as any).zerodha_trading_symbol || inst.symbol;
               const key = `${inst.exchange}:${tradingSymbol}`;
               return {
                 ...inst,
@@ -541,9 +581,13 @@ instruments.get('/search', async (c) => {
               };
             });
           } catch (e) {
-            console.error('Failed to fetch LTP:', e);
+            console.error('Failed to fetch LTP from Zerodha:', e);
           }
         }
+      } else if (activeBroker === 'angelone') {
+        // TODO: Implement AngelOne LTP fetching
+        // For now, use stored last_price from instruments table
+        console.log('AngelOne LTP fetching not yet implemented, using stored prices');
       }
     }
     

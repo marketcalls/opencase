@@ -171,19 +171,20 @@ baskets.get('/:id', async (c) => {
     
     if (session && stocks.results.length > 0) {
       try {
-        const account = await c.env.DB.prepare(
-          'SELECT * FROM accounts WHERE id = ?'
-        ).bind(session.account_id).first<Account>();
-        
-        if (account?.access_token) {
+        // Get connected broker account for LTP
+        const brokerAccount = await c.env.DB.prepare(
+          'SELECT * FROM broker_accounts WHERE user_id = ? AND is_connected = 1 AND is_active = 1 LIMIT 1'
+        ).bind(session.user_id).first<any>();
+
+        if (brokerAccount?.access_token) {
           const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
-          let apiKey = c.env.KITE_API_KEY || '';
-          let apiSecret = c.env.KITE_API_SECRET || '';
-          
-          // Try account-specific credentials first
-          if (account.kite_api_key && account.kite_api_secret) {
-            apiKey = await decrypt(account.kite_api_key, encryptionKey);
-            apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
+          let apiKey = '';
+          let apiSecret = '';
+
+          // Get API credentials from broker account
+          if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
+            apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+            apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
           }
           
           // If not found, try app_config
@@ -203,7 +204,7 @@ baskets.get('/:id', async (c) => {
           }
           
           if (apiKey) {
-            const kite = new KiteClient(apiKey, apiSecret, account.access_token);
+            const kite = new KiteClient(apiKey, apiSecret, brokerAccount.access_token);
             const instruments = stocks.results.map(s => `${s.exchange}:${s.trading_symbol}`);
             const quotes = await kite.getLTP(instruments);
             
@@ -250,33 +251,51 @@ baskets.get('/:id', async (c) => {
  * Create a new basket
  */
 baskets.post('/', async (c) => {
-  const session = c.get('session');
+  const session = c.get('session') as any;
+  const userSession = c.get('userSession') as any;
+
   if (!session) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
 
+  // Use user_id from session or userSession
+  const userId = session.user_id || userSession?.user_id;
+  if (!userId) {
+    return c.json(errorResponse('UNAUTHORIZED', 'User ID not found in session'), 401);
+  }
+
   try {
     const body = await c.req.json<CreateBasketRequest>();
-    
+
     // Validate
     if (!body.name || !body.stocks || body.stocks.length === 0) {
       return c.json(errorResponse('INVALID_INPUT', 'Name and stocks are required'), 400);
     }
-    
+
     if (body.stocks.length > 20) {
       return c.json(errorResponse('INVALID_INPUT', 'Maximum 20 stocks per basket'), 400);
     }
-    
+
     if (!validateBasketWeights(body.stocks)) {
       return c.json(errorResponse('INVALID_WEIGHTS', 'Stock weights must sum to 100%'), 400);
     }
-    
+
+    // Get a valid account_id from accounts table (legacy requirement)
+    // The accounts table is from the old schema, but baskets still has a FK to it
+    const anyAccount = await c.env.DB.prepare(
+      'SELECT id FROM accounts LIMIT 1'
+    ).first<{ id: number }>();
+
+    // Use the found account_id or 1 as fallback (assuming at least one account exists)
+    const legacyAccountId = anyAccount?.id || 1;
+
     // Create basket
     const result = await c.env.DB.prepare(`
-      INSERT INTO baskets (account_id, name, description, theme, category, is_public, risk_level, benchmark_symbol, tags)
-      VALUES (?, ?, ?, ?, 'custom', ?, ?, ?, ?)
+      INSERT INTO baskets (account_id, user_id, name, description, theme, category, is_public, risk_level, benchmark_symbol, tags)
+      VALUES (?, ?, ?, ?, ?, 'custom', ?, ?, ?, ?)
     `).bind(
-      session.account_id,
+      legacyAccountId,
+      userId,
       body.name,
       body.description || null,
       body.theme || null,
@@ -285,9 +304,8 @@ baskets.post('/', async (c) => {
       body.benchmark_symbol || 'NSE:NIFTY 50',
       body.tags ? JSON.stringify(body.tags) : null
     ).run();
-    
     const basketId = result.meta.last_row_id;
-    
+
     // Insert stocks
     for (const stock of body.stocks) {
       await c.env.DB.prepare(`
@@ -295,7 +313,7 @@ baskets.post('/', async (c) => {
         VALUES (?, ?, ?, ?)
       `).bind(basketId, stock.trading_symbol, stock.exchange || 'NSE', stock.weight_percentage).run();
     }
-    
+
     return c.json(successResponse({
       basket_id: basketId,
       message: 'Basket created successfully'
@@ -321,8 +339,8 @@ baskets.put('/:id', async (c) => {
   try {
     // Check ownership
     const basket = await c.env.DB.prepare(
-      'SELECT * FROM baskets WHERE id = ? AND account_id = ?'
-    ).bind(basketId, session.account_id).first<Basket>();
+      'SELECT * FROM baskets WHERE id = ? AND user_id = ?'
+    ).bind(basketId, session.user_id).first<Basket>();
     
     if (!basket) {
       return c.json(errorResponse('NOT_FOUND', 'Basket not found or access denied'), 404);
@@ -410,8 +428,8 @@ baskets.delete('/:id', async (c) => {
 
   try {
     const basket = await c.env.DB.prepare(
-      'SELECT * FROM baskets WHERE id = ? AND account_id = ?'
-    ).bind(basketId, session.account_id).first<Basket>();
+      'SELECT * FROM baskets WHERE id = ? AND user_id = ?'
+    ).bind(basketId, session.user_id).first<Basket>();
     
     if (!basket) {
       return c.json(errorResponse('NOT_FOUND', 'Basket not found or access denied'), 404);
@@ -436,7 +454,7 @@ baskets.delete('/:id', async (c) => {
 baskets.post('/:id/clone', async (c) => {
   const basketId = parseInt(c.req.param('id'));
   const session = c.get('session');
-  
+
   if (!session) {
     return c.json(errorResponse('UNAUTHORIZED', 'Session required'), 401);
   }
@@ -446,19 +464,26 @@ baskets.post('/:id/clone', async (c) => {
     const original = await c.env.DB.prepare(`
       SELECT * FROM baskets WHERE id = ? AND is_active = 1 AND (is_public = 1 OR is_template = 1)
     `).bind(basketId).first<Basket>();
-    
+
     if (!original) {
       return c.json(errorResponse('NOT_FOUND', 'Basket not found or not clonable'), 404);
     }
-    
+
     const { name } = await c.req.json<{ name?: string }>();
-    
+
+    // Get a valid account_id from accounts table (legacy requirement)
+    const anyAccount = await c.env.DB.prepare(
+      'SELECT id FROM accounts LIMIT 1'
+    ).first<{ id: number }>();
+    const legacyAccountId = anyAccount?.id || 1;
+
     // Create cloned basket
     const result = await c.env.DB.prepare(`
-      INSERT INTO baskets (account_id, name, description, theme, category, risk_level, benchmark_symbol, tags)
-      VALUES (?, ?, ?, ?, 'custom', ?, ?, ?)
+      INSERT INTO baskets (account_id, user_id, name, description, theme, category, risk_level, benchmark_symbol, tags)
+      VALUES (?, ?, ?, ?, ?, 'custom', ?, ?, ?)
     `).bind(
-      session.account_id,
+      legacyAccountId,
+      session.user_id,
       name || `${original.name} (Copy)`,
       original.description,
       original.theme,
@@ -485,7 +510,7 @@ baskets.post('/:id/clone', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO basket_clones (original_basket_id, cloned_basket_id, cloned_by)
       VALUES (?, ?, ?)
-    `).bind(basketId, newBasketId, session.account_id).run();
+    `).bind(basketId, newBasketId, session.user_id).run();
     
     // Increment clone count
     await c.env.DB.prepare(

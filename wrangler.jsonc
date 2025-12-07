@@ -18,8 +18,24 @@
       "preview_id": "opencase-kv-preview"
     }
   ],
+  // Cron trigger for scheduled tasks (3:00 AM IST = 21:30 UTC)
+  "triggers": {
+    "crons": ["30 21 * * *"]
+  },
   "vars": {
     "KITE_API_KEY": "",
-    "KITE_REDIRECT_URL": "http://localhost:5173/api/auth/callback"
+    "KITE_REDIRECT_URL": "http://localhost:3000/api/auth/callback",
+
+    // Token cleanup configuration
+    // Set to "false" to disable automatic token cleanup
+    "TOKEN_CLEANUP_ENABLED": "true",
+    // Time to disconnect brokers (24-hour format, e.g., "03:00")
+    "TOKEN_CLEANUP_TIME": "03:00",
+    // Your timezone (e.g., "Asia/Kolkata", "America/New_York", "UTC")
+    "TOKEN_CLEANUP_TIMEZONE": "Asia/Kolkata",
+    // Hours after which tokens expire (broker tokens typically expire in 24h)
+    "TOKEN_EXPIRY_HOURS": "24",
+    // User session expiry in days
+    "SESSION_EXPIRY_DAYS": "60"
   }
 }
