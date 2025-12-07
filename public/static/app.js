@@ -773,9 +773,9 @@ function renderStocksTable() {
             return `
               <tr class="hover:bg-gray-50">
                 <td class="px-4 py-4">
-                  <div class="flex items-center">
-                    <a href="#" class="text-indigo-600 hover:text-indigo-800 font-medium">${stock.trading_symbol || stock.symbol}</a>
-                    <span class="ml-2 text-xs text-gray-400">${stock.name || ''}</span>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-indigo-600 font-medium">${stock.trading_symbol || stock.symbol}</span>
+                    <span class="px-2 py-0.5 text-xs rounded font-medium ${stock.exchange === 'BSE' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}">${stock.exchange || 'NSE'}</span>
                   </div>
                 </td>
                 <td class="px-4 py-4 text-right font-medium">
@@ -1618,17 +1618,22 @@ function renderSearchResults() {
   if (state.searchResults.length === 0) {
     container.innerHTML = '<div class="p-4 text-gray-500">No results found</div>';
   } else {
-    container.innerHTML = state.searchResults.map(stock => `
-      <div class="p-3 hover:bg-gray-50 cursor-pointer border-b last:border-0" onclick="addStock(${JSON.stringify(stock).replace(/"/g, '&quot;')})">
-        <div class="flex justify-between items-center">
-          <div>
-            <p class="font-medium">${stock.trading_symbol || stock.symbol}</p>
-            <p class="text-xs text-gray-500">${stock.name || ''} • ${stock.exchange}</p>
+    container.innerHTML = state.searchResults.map(stock => {
+      const exchangeBadge = stock.exchange === 'BSE'
+        ? '<span class="px-2 py-0.5 text-xs rounded font-medium bg-orange-100 text-orange-700">BSE</span>'
+        : '<span class="px-2 py-0.5 text-xs rounded font-medium bg-blue-100 text-blue-700">NSE</span>';
+      return `
+        <div class="p-3 hover:bg-gray-50 cursor-pointer border-b last:border-0" onclick="addStock(${JSON.stringify(stock).replace(/"/g, '&quot;')})">
+          <div class="flex justify-between items-center">
+            <div class="flex items-center space-x-2">
+              <span class="font-medium">${stock.trading_symbol || stock.symbol}</span>
+              ${exchangeBadge}
+            </div>
+            ${stock.last_price ? `<span class="text-sm font-medium">${formatCurrency(stock.last_price)}</span>` : ''}
           </div>
-          ${stock.last_price ? `<span class="text-sm font-medium">${formatCurrency(stock.last_price)}</span>` : ''}
         </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   }
   container.classList.remove('hidden');
 }
@@ -2666,8 +2671,10 @@ function renderBasketDetail() {
                 return `
                   <tr class="hover:bg-gray-50">
                     <td class="px-4 py-4">
-                      <p class="font-medium text-indigo-600">${stock.trading_symbol}</p>
-                      <p class="text-xs text-gray-500">${stock.company_name || ''} • ${stock.exchange}</p>
+                      <div class="flex items-center space-x-2">
+                        <span class="font-medium text-indigo-600">${stock.trading_symbol}</span>
+                        <span class="px-2 py-0.5 text-xs rounded font-medium ${stock.exchange === 'BSE' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}">${stock.exchange || 'NSE'}</span>
+                      </div>
                     </td>
                     <td class="px-4 py-4 text-right font-medium">${stock.weight_percentage?.toFixed(2)}%</td>
                     <td class="px-4 py-4 text-right">${stock.last_price ? formatNumber(stock.last_price, 2) : '<span class="text-gray-400">-</span>'}</td>
