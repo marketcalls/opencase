@@ -27,7 +27,9 @@ const state = {
   loading: true,
   instrumentsStatus: null,
   investmentAmount: 50000,  // Default investment amount for basket creation
-  weightingScheme: 'custom' // 'equal' or 'custom'
+  weightingScheme: 'custom', // 'equal' or 'custom'
+  editingBasketId: null,     // Basket ID when editing, null when creating new
+  investBasketMinAmount: 0   // Minimum investment for the basket being invested in
 };
 
 // API Helper
@@ -626,7 +628,9 @@ function renderPortfolioHoldings() {
 
 function renderCreateBasket() {
   const minInvestment = calculateMinInvestment();
-  
+  const isEditing = state.editingBasketId !== null;
+  const headerTitle = isEditing ? 'Edit Basket' : 'Create New Basket';
+
   return `
     <div class="space-y-6">
       <div class="flex items-center space-x-4">
@@ -634,7 +638,7 @@ function renderCreateBasket() {
           <i class="fas fa-arrow-left"></i>
         </button>
         <h1 class="text-2xl font-bold text-gray-900 flex items-center">
-          <span id="basketNameDisplay">Create New Basket</span>
+          <span id="basketNameDisplay">${headerTitle}</span>
           <button onclick="editBasketName()" class="ml-2 text-gray-400 hover:text-gray-600">
             <i class="fas fa-pencil-alt text-sm"></i>
           </button>
@@ -726,8 +730,8 @@ function renderCreateBasket() {
               <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-100">
                 Cancel
               </button>
-              <button type="submit" onclick="console.log('[DEBUG] Create Basket button clicked')" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center" ${state.basketStocks.length === 0 ? 'disabled' : ''}>
-                <i class="fas fa-save mr-2"></i>Create Basket
+              <button type="submit" onclick="console.log('[DEBUG] ${isEditing ? 'Save' : 'Create'} Basket button clicked')" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center" ${state.basketStocks.length === 0 ? 'disabled' : ''}>
+                <i class="fas fa-save mr-2"></i>${isEditing ? 'Save Changes' : 'Create Basket'}
               </button>
             </div>
           </div>
@@ -1426,7 +1430,10 @@ function renderModals() {
     <div id="investModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
       <div class="bg-white rounded-xl p-8 max-w-md w-full mx-4">
         <div class="flex justify-between items-center mb-6">
-          <h3 class="text-xl font-bold">Invest in Basket</h3>
+          <div>
+            <h3 class="text-xl font-bold">Invest in Basket</h3>
+            <p class="text-sm text-gray-500" id="investBasketName"></p>
+          </div>
           <button onclick="hideInvestModal()" class="text-gray-400 hover:text-gray-600">
             <i class="fas fa-times"></i>
           </button>
@@ -1434,10 +1441,10 @@ function renderModals() {
         <form onsubmit="handleInvest(event)">
           <input type="hidden" id="investBasketId">
           <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-2">Investment Amount (₹)</label>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Investment Amount</label>
             <input type="number" id="investAmount" required min="1000" step="100"
               class="w-full px-4 py-2 border rounded-lg" placeholder="10000">
-            <p class="text-xs text-gray-500 mt-1">Minimum ₹1,000</p>
+            <p class="text-xs text-gray-500 mt-1" id="investMinDisplay">Minimum 1,000</p>
           </div>
           <div class="mb-6">
             <label class="flex items-center">
@@ -1502,9 +1509,14 @@ function renderModals() {
 function setView(view) {
   console.log('[DEBUG] setView called with:', view);
 
-  // Clear basket stocks BEFORE rendering create-basket view
-  if (view === 'create-basket') {
+  // Clear basket stocks and editing state BEFORE rendering create-basket view (only for new baskets)
+  if (view === 'create-basket' && !state.editingBasketId) {
     state.basketStocks = [];
+  }
+
+  // Clear editing state when navigating away from create-basket
+  if (view !== 'create-basket') {
+    state.editingBasketId = null;
   }
 
   state.currentView = view;
@@ -1775,32 +1787,25 @@ function updateWeightDisplay() {
 
 async function handleCreateBasket(e) {
   e.preventDefault();
-  console.log('[DEBUG] handleCreateBasket called');
-  console.log('[DEBUG] state.basketStocks:', state.basketStocks);
-  console.log('[DEBUG] state.basketStocks.length:', state.basketStocks.length);
+  const isEditing = state.editingBasketId !== null;
 
   if (state.basketStocks.length === 0) {
-    console.log('[DEBUG] No stocks in basket');
     showNotification('Please add at least one stock', 'warning');
     return;
   }
 
   const totalWeight = state.basketStocks.reduce((sum, s) => sum + s.weight_percentage, 0);
-  console.log('[DEBUG] totalWeight:', totalWeight);
   if (Math.abs(totalWeight - 100) > 0.1) {
-    console.log('[DEBUG] Weight validation failed');
     showNotification('Total weight must equal 100%', 'warning');
     return;
   }
 
   const basketName = document.getElementById('basketName').value;
-  console.log('[DEBUG] basketName:', basketName);
   if (!basketName || basketName.trim() === '') {
-    console.log('[DEBUG] No basket name');
     showNotification('Please enter a basket name', 'warning');
     return;
   }
-  
+
   const data = {
     name: basketName.trim(),
     description: document.getElementById('basketDescription').value || '',
@@ -1811,36 +1816,38 @@ async function handleCreateBasket(e) {
       weight_percentage: parseFloat(s.weight_percentage.toFixed(2))
     }))
   };
-  
-  console.log('Creating basket:', data); // Debug log
-  
+
   // Disable button to prevent double submission
   const submitBtn = document.querySelector('#createBasketForm button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
+    submitBtn.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${isEditing ? 'Saving...' : 'Creating...'}`;
   }
-  
+
   try {
-    const res = await api.post('/baskets', data);
-    console.log('Create basket response:', res); // Debug log
-    
+    let res;
+    if (isEditing) {
+      res = await api.put(`/baskets/${state.editingBasketId}`, data);
+    } else {
+      res = await api.post('/baskets', data);
+    }
+
     if (res?.success) {
-      showNotification('Basket created successfully!', 'success');
-      state.basketStocks = []; // Clear stocks
+      showNotification(isEditing ? 'Basket updated successfully!' : 'Basket created successfully!', 'success');
+      state.basketStocks = [];
+      state.editingBasketId = null;
       await loadDashboardData();
       setView('baskets');
     } else {
-      showNotification(res?.error?.message || 'Failed to create basket', 'error');
+      showNotification(res?.error?.message || `Failed to ${isEditing ? 'update' : 'create'} basket`, 'error');
     }
   } catch (err) {
-    console.error('Create basket error:', err);
-    showNotification('Failed to create basket. Please try again.', 'error');
+    console.error('Save basket error:', err);
+    showNotification(`Failed to ${isEditing ? 'update' : 'create'} basket. Please try again.`, 'error');
   } finally {
-    // Re-enable button
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.innerHTML = '<i class="fas fa-save mr-2"></i>Create Basket';
+      submitBtn.innerHTML = `<i class="fas fa-save mr-2"></i>${isEditing ? 'Save Changes' : 'Create Basket'}`;
     }
   }
 }
@@ -1854,6 +1861,43 @@ async function viewBasket(basketId) {
   }
 }
 
+async function editBasket(basketId) {
+  const res = await api.get(`/baskets/${basketId}`);
+  if (res?.success) {
+    const basket = res.data;
+
+    // Populate state for editing
+    state.editingBasketId = basketId;
+    state.basketStocks = (basket.stocks || []).map(stock => ({
+      trading_symbol: stock.trading_symbol,
+      symbol: stock.trading_symbol,
+      exchange: stock.exchange || 'NSE',
+      name: stock.company_name || '',
+      weight_percentage: stock.weight_percentage,
+      last_price: stock.last_price || 0
+    }));
+
+    // Navigate to create-basket view (which now works as edit too)
+    state.currentView = 'create-basket';
+    renderApp();
+
+    // Populate form fields after render
+    setTimeout(() => {
+      const nameInput = document.getElementById('basketName');
+      const descInput = document.getElementById('basketDescription');
+      const themeInput = document.getElementById('basketTheme');
+
+      if (nameInput) nameInput.value = basket.name || '';
+      if (descInput) descInput.value = basket.description || '';
+      if (themeInput) themeInput.value = basket.theme || '';
+
+      updateBasketNameDisplay();
+    }, 0);
+  } else {
+    showNotification('Failed to load basket', 'error');
+  }
+}
+
 async function viewInvestment(investmentId) {
   const res = await api.get(`/investments/${investmentId}`);
   if (res?.success) {
@@ -1863,8 +1907,58 @@ async function viewInvestment(investmentId) {
   }
 }
 
-function investInBasket(basketId) {
+async function investInBasket(basketId) {
+  // Fetch basket details to get minimum investment
+  const res = await api.get(`/baskets/${basketId}`);
+  if (!res?.success) {
+    showNotification('Failed to load basket details', 'error');
+    return;
+  }
+
+  const basket = res.data;
+  const stocks = basket.stocks || [];
+
+  // Calculate minimum investment (sum of 1 share of each stock at weight)
+  let minInvestment = 0;
+  if (stocks.length > 0) {
+    for (const stock of stocks) {
+      const price = stock.last_price || 0;
+      const weight = stock.weight_percentage / 100;
+      if (price > 0 && weight > 0) {
+        // For this weight, what's the minimum amount to buy at least 1 share?
+        const minForStock = price / weight;
+        minInvestment = Math.max(minInvestment, minForStock);
+      }
+    }
+  }
+
+  // Round up to nearest 100
+  minInvestment = Math.ceil(minInvestment / 100) * 100;
+  if (minInvestment < 1000) minInvestment = 1000;
+
+  // Store for validation
+  state.investBasketMinAmount = minInvestment;
+
+  // Update modal
   document.getElementById('investBasketId').value = basketId;
+  const amountInput = document.getElementById('investAmount');
+  amountInput.min = minInvestment;
+  amountInput.step = minInvestment;
+  amountInput.value = minInvestment;
+  amountInput.placeholder = minInvestment.toString();
+
+  // Update minimum display
+  const minDisplay = document.getElementById('investMinDisplay');
+  if (minDisplay) {
+    minDisplay.textContent = `Minimum ${formatCurrency(minInvestment)} (multiples of ${formatCurrency(minInvestment)})`;
+  }
+
+  // Update basket name in modal
+  const basketNameDisplay = document.getElementById('investBasketName');
+  if (basketNameDisplay) {
+    basketNameDisplay.textContent = basket.name;
+  }
+
   document.getElementById('investModal').classList.remove('hidden');
   document.getElementById('investModal').classList.add('flex');
 }
@@ -1872,15 +1966,30 @@ function investInBasket(basketId) {
 function hideInvestModal() {
   document.getElementById('investModal').classList.add('hidden');
   document.getElementById('investModal').classList.remove('flex');
+  state.investBasketMinAmount = 0;
 }
 
 async function handleInvest(e) {
   e.preventDefault();
-  
+
   const basketId = document.getElementById('investBasketId').value;
   const amount = parseFloat(document.getElementById('investAmount').value);
   const useDirectApi = document.getElementById('useDirectApi').checked;
-  
+  const minAmount = state.investBasketMinAmount || 1000;
+
+  // Validate amount is at least minimum
+  if (amount < minAmount) {
+    showNotification(`Minimum investment is ${formatCurrency(minAmount)}`, 'warning');
+    return;
+  }
+
+  // Validate amount is a multiple of minimum
+  if (amount % minAmount !== 0) {
+    const suggestedAmount = Math.ceil(amount / minAmount) * minAmount;
+    showNotification(`Amount must be a multiple of ${formatCurrency(minAmount)}. Try ${formatCurrency(suggestedAmount)}`, 'warning');
+    return;
+  }
+
   const res = await api.post(`/investments/buy/${basketId}`, {
     investment_amount: amount,
     use_direct_api: useDirectApi

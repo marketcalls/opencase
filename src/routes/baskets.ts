@@ -155,8 +155,8 @@ baskets.get('/:id', async (c) => {
       return c.json(errorResponse('NOT_FOUND', 'Basket not found'), 404);
     }
     
-    // Check access: own basket, public, or template
-    if (basket.account_id !== session?.account_id && !basket.is_public && !basket.is_template) {
+    // Check access: own basket, public, or template (use user_id for ownership)
+    if (basket.user_id !== session?.user_id && !basket.is_public && !basket.is_template) {
       return c.json(errorResponse('FORBIDDEN', 'Access denied'), 403);
     }
     
