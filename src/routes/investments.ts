@@ -43,7 +43,56 @@ investments.use('*', async (c, next) => {
 });
 
 /**
- * Helper to get KiteClient for an account
+ * Helper to get KiteClient for a broker account (new architecture)
+ * Returns { client, brokerType } or null
+ */
+async function getBrokerClient(
+  c: any,
+  brokerAccountId: number
+): Promise<{ client: KiteClient; brokerType: string } | null> {
+  // Get broker account from new table
+  const brokerAccount = await c.env.DB.prepare(
+    'SELECT * FROM broker_accounts WHERE id = ? AND is_connected = 1 AND is_active = 1'
+  ).bind(brokerAccountId).first<any>();
+
+  if (!brokerAccount?.access_token) return null;
+
+  const brokerType = brokerAccount.broker_type || 'zerodha';
+
+  // Only Zerodha is supported for order placement currently
+  if (brokerType !== 'zerodha') {
+    return null;
+  }
+
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+
+  // Get API credentials from broker account
+  if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
+    const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+    const apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
+    return { client: new KiteClient(apiKey, apiSecret, brokerAccount.access_token), brokerType };
+  }
+
+  // Fall back to app config
+  const apiKeyConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+  ).first<{ config_value: string }>();
+
+  const apiSecretConfig = await c.env.DB.prepare(
+    "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+  ).first<{ config_value: string }>();
+
+  if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+    const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+    const apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+    return { client: new KiteClient(apiKey, apiSecret, brokerAccount.access_token), brokerType };
+  }
+
+  return null;
+}
+
+/**
+ * Helper to get KiteClient for an account (legacy - uses old accounts table)
  */
 async function getKiteClient(
   c: any,
@@ -52,33 +101,33 @@ async function getKiteClient(
   const account = await c.env.DB.prepare(
     'SELECT * FROM accounts WHERE id = ?'
   ).bind(accountId).first<Account>();
-  
+
   if (!account?.access_token) return null;
-  
+
   const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
-  
+
   // Try account-specific credentials first
   if (account.kite_api_key && account.kite_api_secret) {
     const apiKey = await decrypt(account.kite_api_key, encryptionKey);
     const apiSecret = await decrypt(account.kite_api_secret, encryptionKey);
     return new KiteClient(apiKey, apiSecret, account.access_token);
   }
-  
+
   // Fall back to app config
   const apiKeyConfig = await c.env.DB.prepare(
     "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
   ).first<{ config_value: string }>();
-  
+
   const apiSecretConfig = await c.env.DB.prepare(
     "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
   ).first<{ config_value: string }>();
-  
+
   if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
     const apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
     const apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
     return new KiteClient(apiKey, apiSecret, account.access_token);
   }
-  
+
   return null;
 }
 
@@ -118,8 +167,8 @@ investments.get('/:id', async (c) => {
       SELECT i.*, b.name as basket_name, b.theme, b.benchmark_symbol
       FROM investments i
       JOIN baskets b ON i.basket_id = b.id
-      WHERE i.id = ? AND i.account_id = ?
-    `).bind(investmentId, session.account_id).first<Investment & { basket_name: string; theme: string; benchmark_symbol: string }>();
+      WHERE i.id = ? AND i.user_id = ?
+    `).bind(investmentId, session.user_id).first<Investment & { basket_name: string; theme: string; benchmark_symbol: string }>();
     
     if (!investment) {
       return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
@@ -189,38 +238,56 @@ investments.get('/:id', async (c) => {
 investments.post('/buy/:basketId', async (c) => {
   const basketId = parseInt(c.req.param('basketId'));
   const session = c.get('session') as SessionData;
-  
+
+  // Get active broker account ID from header
+  const activeBrokerId = c.req.header('X-Active-Broker-ID');
+  const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
+  if (!brokerAccountId) {
+    return c.json(errorResponse('NO_BROKER', 'Please select an active broker account'), 400);
+  }
+
   try {
     const { investment_amount, use_direct_api = true } = await c.req.json<BuyBasketRequest & { use_direct_api?: boolean }>();
-    
+
     if (!investment_amount || investment_amount <= 0) {
       return c.json(errorResponse('INVALID_INPUT', 'Valid investment amount required'), 400);
     }
-    
+
     // Get basket
     const basket = await c.env.DB.prepare(
       'SELECT * FROM baskets WHERE id = ? AND is_active = 1'
     ).bind(basketId).first<Basket>();
-    
+
     if (!basket) {
       return c.json(errorResponse('NOT_FOUND', 'Basket not found'), 404);
     }
-    
+
     // Get stocks
     const stocks = await c.env.DB.prepare(
       'SELECT * FROM basket_stocks WHERE basket_id = ?'
     ).bind(basketId).all<BasketStock>();
-    
+
     if (stocks.results.length === 0) {
       return c.json(errorResponse('EMPTY_BASKET', 'Basket has no stocks'), 400);
     }
-    
-    // Get Kite client
-    const kite = await getKiteClient(c, session.account_id);
-    
-    if (!kite) {
-      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha first'), 401);
+
+    // Get broker client using new architecture
+    const brokerClient = await getBrokerClient(c, brokerAccountId);
+
+    if (!brokerClient) {
+      // Check if it's an unsupported broker
+      const brokerAccount = await c.env.DB.prepare(
+        'SELECT broker_type FROM broker_accounts WHERE id = ?'
+      ).bind(brokerAccountId).first<{ broker_type: string }>();
+
+      if (brokerAccount?.broker_type === 'angelone') {
+        return c.json(errorResponse('UNSUPPORTED_BROKER', 'Order placement for AngelOne is coming soon. Please use Zerodha for now.'), 400);
+      }
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to your broker first'), 401);
     }
+
+    const kite = brokerClient.client;
     
     // Get live prices
     const instruments = stocks.results.map(s => `${s.exchange}:${s.trading_symbol}`);
@@ -236,12 +303,16 @@ investments.post('/buy/:basketId', async (c) => {
     if (orders.length === 0) {
       return c.json(errorResponse('INSUFFICIENT_AMOUNT', 'Investment amount too low to buy any stocks'), 400);
     }
-    
+
+    // Get a valid legacy account_id for foreign key constraint
+    const anyAccount = await c.env.DB.prepare('SELECT id FROM accounts LIMIT 1').first<{ id: number }>();
+    const legacyAccountId = anyAccount?.id || 1;
+
     // Create transaction record
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, 'BUY', ?, 'PENDING', ?)
-    `).bind(session.account_id, basketId, totalAmount, JSON.stringify(orders)).run();
+      INSERT INTO transactions (account_id, user_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, 'BUY', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, basketId, totalAmount, JSON.stringify(orders)).run();
     
     const transactionId = txResult.meta.last_row_id;
     
@@ -277,9 +348,9 @@ investments.post('/buy/:basketId', async (c) => {
           }, 0);
           
           const invResult = await c.env.DB.prepare(`
-            INSERT INTO investments (account_id, basket_id, invested_amount, current_value, status)
-            VALUES (?, ?, ?, ?, 'ACTIVE')
-          `).bind(session.account_id, basketId, actualAmount, actualAmount).run();
+            INSERT INTO investments (account_id, user_id, basket_id, invested_amount, current_value, status)
+            VALUES (?, ?, ?, ?, ?, 'ACTIVE')
+          `).bind(legacyAccountId, session.user_id, basketId, actualAmount, actualAmount).run();
           
           const investmentId = invResult.meta.last_row_id;
           
