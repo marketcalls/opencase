@@ -2,12 +2,6 @@
 
 An open-source, self-hostable platform for creating, managing, and investing in custom stock baskets. Supports multiple brokers including Zerodha Kite and Angel One.
 
-## Live Demo
-
-**Sandbox URL:** https://3000-ies66ly1r6mw2sjvwpwv0-cbeee0f9.sandbox.novita.ai
-
-**GitHub:** https://github.com/marketcalls/opencase
-
 ## Project Overview
 
 - **Name**: OpenCase
@@ -16,7 +10,7 @@ An open-source, self-hostable platform for creating, managing, and investing in 
 
 ## Features
 
-### Completed Features ✅
+### Completed Features 
 
 1. **User Authentication System**
    - Email/Password signup and login
@@ -295,7 +289,7 @@ npx wrangler pages secret put ENCRYPTION_KEY --project-name opencase
 
 ## License
 
-MIT License - See LICENSE file for details.
+AGPL3 License - See LICENSE file for details.
 
 ## Disclaimer
 
