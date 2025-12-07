@@ -119,6 +119,15 @@ instruments.get('/status', async (c) => {
       "SELECT COUNT(*) as count FROM master_instruments WHERE exchange = 'BSE'"
     ).first<{ count: number }>();
 
+    // Count index instruments
+    const nseIndexCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM master_instruments WHERE exchange = 'NSE_INDEX'"
+    ).first<{ count: number }>();
+
+    const bseIndexCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM master_instruments WHERE exchange = 'BSE_INDEX'"
+    ).first<{ count: number }>();
+
     // Count instruments with Zerodha tokens
     const zerodhaCount = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM master_instruments WHERE zerodha_token IS NOT NULL"
@@ -141,6 +150,8 @@ instruments.get('/status', async (c) => {
       total_instruments: count?.count || 0,
       nse_instruments: nseCount?.count || 0,
       bse_instruments: bseCount?.count || 0,
+      nse_index_instruments: nseIndexCount?.count || 0,
+      bse_index_instruments: bseIndexCount?.count || 0,
       zerodha_instruments: zerodhaCount?.count || 0,
       angelone_instruments: angeloneCount?.count || 0,
       both_brokers: bothCount?.count || 0,
@@ -231,7 +242,10 @@ instruments.post('/download', async (c) => {
 
         const brokerSymbol = values[colIndex['tradingsymbol']]?.trim() || '';
         // Unified symbol: for equity, tradingsymbol IS the unified symbol (Zerodha uses TCS, INFY)
-        const unifiedSymbol = brokerSymbol;
+        // For indices, normalize to common format (NIFTY 50 -> NIFTY, NIFTY BANK -> BANKNIFTY)
+        const unifiedSymbol = segment === 'INDICES'
+          ? normalizeIndexSymbol(brokerSymbol)
+          : brokerSymbol;
 
         // Map exchange for indices (same as OpenAlgo)
         let finalExchange = exchange;
@@ -369,7 +383,7 @@ instruments.post('/download-angelone', async (c) => {
 
     for (const inst of equityInstruments) {
       // Clean symbol: remove -EQ, -BE, -MF, -SG suffixes to get unified symbol
-      const unifiedSymbol = (inst.symbol || '').replace(/-EQ$|-BE$|-MF$|-SG$/, '');
+      let unifiedSymbol = (inst.symbol || '').replace(/-EQ$|-BE$|-MF$|-SG$/, '');
       const brokerSymbol = inst.symbol || '';  // Original broker symbol
       const originalExchange = inst.exch_seg;
 
@@ -381,6 +395,8 @@ instruments.post('/download-angelone', async (c) => {
         if (originalExchange === 'NSE') exchange = 'NSE_INDEX';
         else if (originalExchange === 'BSE') exchange = 'BSE_INDEX';
         else if (originalExchange === 'MCX') exchange = 'MCX_INDEX';
+        // Normalize index symbols to common format (Nifty 50 -> NIFTY, Nifty Bank -> BANKNIFTY)
+        unifiedSymbol = normalizeIndexSymbol(inst.name || unifiedSymbol);
       }
 
       // For equity instruments, expiry and strike should be NULL to match Zerodha
@@ -486,6 +502,37 @@ async function insertAngelOneInstrumentsBatch(db: D1Database, instruments: any[]
 
   // Execute all statements in a single batch (single round trip)
   await db.batch(statements);
+}
+
+/**
+ * Normalize index symbols to common format (like OpenAlgo)
+ * This ensures consistent symbols across brokers for benchmarking
+ */
+function normalizeIndexSymbol(symbol: string): string {
+  const indexSymbolMap: Record<string, string> = {
+    // Zerodha format -> Common format
+    'NIFTY 50': 'NIFTY',
+    'NIFTY BANK': 'BANKNIFTY',
+    'NIFTY FIN SERVICE': 'FINNIFTY',
+    'NIFTY NEXT 50': 'NIFTYNXT50',
+    'NIFTY MID SELECT': 'MIDCPNIFTY',
+    'INDIA VIX': 'INDIAVIX',
+    'SNSX50': 'SENSEX50',
+    // Angel One format -> Common format (case variations)
+    'Nifty 50': 'NIFTY',
+    'Nifty Bank': 'BANKNIFTY',
+    'Nifty Fin Service': 'FINNIFTY',
+    'Nifty Next 50': 'NIFTYNXT50',
+    'India VIX': 'INDIAVIX',
+    // BSE indices
+    'SENSEX': 'SENSEX',
+    'BANKEX': 'BANKEX',
+    'BSE500': 'BSE500',
+    'BSE100': 'BSE100',
+    'BSE200': 'BSE200',
+  };
+
+  return indexSymbolMap[symbol] || symbol;
 }
 
 /**
@@ -716,6 +763,54 @@ instruments.get('/search', async (c) => {
   } catch (error) {
     console.error('Search error:', error);
     return c.json(errorResponse('ERROR', 'Search failed'), 500);
+  }
+});
+
+/**
+ * GET /api/instruments/indices
+ * Get all available indices for benchmarking
+ * Supports NSE_INDEX, BSE_INDEX, MCX_INDEX exchanges
+ */
+instruments.get('/indices', async (c) => {
+  const exchange = c.req.query('exchange'); // Optional: NSE_INDEX, BSE_INDEX, or all
+  const query = c.req.query('q')?.toUpperCase();
+  const limit = parseInt(c.req.query('limit') || '50');
+
+  try {
+    let sql = `
+      SELECT
+        id, symbol, name, exchange, instrument_type, segment, tick_size, lot_size,
+        zerodha_token, zerodha_exchange_token, zerodha_trading_symbol,
+        angelone_token, angelone_trading_symbol,
+        source, last_price,
+        zerodha_token as instrument_token,
+        zerodha_exchange_token as exchange_token,
+        COALESCE(zerodha_trading_symbol, symbol) as trading_symbol
+      FROM master_instruments
+      WHERE exchange IN ('NSE_INDEX', 'BSE_INDEX', 'MCX_INDEX')
+        AND instrument_type = 'INDEX'
+    `;
+    const params: any[] = [];
+
+    if (exchange) {
+      sql += ' AND exchange = ?';
+      params.push(exchange);
+    }
+
+    if (query) {
+      sql += ' AND (symbol LIKE ? OR name LIKE ?)';
+      params.push(`%${query}%`, `%${query}%`);
+    }
+
+    sql += ' ORDER BY CASE exchange WHEN "NSE_INDEX" THEN 1 WHEN "BSE_INDEX" THEN 2 ELSE 3 END, symbol LIMIT ?';
+    params.push(limit);
+
+    const results = await c.env.DB.prepare(sql).bind(...params).all<MasterInstrument>();
+
+    return c.json(successResponse(results.results));
+  } catch (error) {
+    console.error('Indices search error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch indices'), 500);
   }
 });
 
