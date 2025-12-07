@@ -27,7 +27,7 @@ app.use('*', logger());
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'X-Session-ID', 'Authorization']
+  allowHeaders: ['Content-Type', 'X-Session-ID', 'X-Active-Broker-ID', 'Authorization']
 }));
 
 // API Routes

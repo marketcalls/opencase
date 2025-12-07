@@ -104,8 +104,19 @@ async function initApp() {
     const brokerRes = await api.get('/broker-accounts');
     if (brokerRes?.success) {
       state.brokerAccounts = brokerRes.data;
-      // Find first connected account as active
-      state.activeBrokerAccount = state.brokerAccounts.find(acc => acc.is_connected);
+      // Check localStorage for previously selected broker
+      const savedBrokerId = localStorage.getItem('activeBrokerId');
+      if (savedBrokerId) {
+        const savedBroker = state.brokerAccounts.find(acc => acc.id === parseInt(savedBrokerId) && acc.is_connected);
+        state.activeBrokerAccount = savedBroker || state.brokerAccounts.find(acc => acc.is_connected);
+      } else {
+        // Default to first connected account
+        state.activeBrokerAccount = state.brokerAccounts.find(acc => acc.is_connected);
+      }
+      // Save active broker to localStorage
+      if (state.activeBrokerAccount) {
+        localStorage.setItem('activeBrokerId', state.activeBrokerAccount.id.toString());
+      }
     }
     
     // Check instruments status
@@ -1049,17 +1060,23 @@ function renderBaskets() {
 }
 
 function renderInvestments() {
+  const activeBroker = state.activeBrokerAccount;
+  const brokerName = activeBroker ? activeBroker.account_name : 'All Brokers';
+
   return `
     <div class="space-y-6">
       <div class="flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-gray-900">My Investments</h1>
+        <div>
+          <h1 class="text-2xl font-bold text-gray-900">My Investments</h1>
+          <p class="text-sm text-gray-500">Showing investments for: <span class="font-medium">${brokerName}</span></p>
+        </div>
       </div>
 
       ${state.investments.length === 0 ? `
         <div class="text-center py-16 bg-white rounded-xl">
           <i class="fas fa-wallet text-6xl text-gray-300 mb-4"></i>
           <h3 class="text-xl font-medium text-gray-600 mb-2">No investments yet</h3>
-          <p class="text-gray-500 mb-6">Start investing in your baskets</p>
+          <p class="text-gray-500 mb-6">Start investing in your baskets with ${brokerName}</p>
           <button onclick="setView('explore')" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
             <i class="fas fa-compass mr-2"></i>Explore Baskets
           </button>
@@ -1070,6 +1087,7 @@ function renderInvestments() {
             <thead class="bg-gray-50">
               <tr>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Basket</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Broker</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Invested</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Current Value</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
@@ -1081,6 +1099,11 @@ function renderInvestments() {
                 const currentValue = inv.current_value || inv.invested_amount;
                 const pnl = currentValue - inv.invested_amount;
                 const pnlPct = ((pnl / inv.invested_amount) * 100).toFixed(2);
+                const brokerBadge = inv.broker_type === 'angelone'
+                  ? '<span class="px-2 py-1 text-xs rounded bg-orange-100 text-orange-700">AngelOne</span>'
+                  : inv.broker_type === 'zerodha'
+                  ? '<span class="px-2 py-1 text-xs rounded bg-blue-100 text-blue-700">Zerodha</span>'
+                  : '<span class="px-2 py-1 text-xs rounded bg-gray-100 text-gray-600">Unknown</span>';
                 return `
                   <tr class="hover:bg-gray-50 cursor-pointer" onclick="viewInvestment(${inv.id})">
                     <td class="px-6 py-4">
@@ -1088,6 +1111,10 @@ function renderInvestments() {
                         <p class="font-medium text-gray-900">${inv.basket_name}</p>
                         <p class="text-sm text-gray-500">${inv.basket_theme || ''}</p>
                       </div>
+                    </td>
+                    <td class="px-6 py-4">
+                      ${brokerBadge}
+                      <p class="text-xs text-gray-500 mt-1">${inv.broker_account_name || ''}</p>
                     </td>
                     <td class="px-6 py-4 text-right">${formatCurrency(inv.invested_amount)}</td>
                     <td class="px-6 py-4 text-right">${formatCurrency(currentValue)}</td>
@@ -1549,6 +1576,10 @@ async function switchBrokerAccount(accountId) {
       return;
     }
     state.activeBrokerAccount = account;
+    // Persist to localStorage
+    localStorage.setItem('activeBrokerId', account.id.toString());
+    // Reload investments for this broker
+    await loadDashboardData();
     renderApp();
     showNotification(`Switched to ${account.account_name}`, 'success');
   }

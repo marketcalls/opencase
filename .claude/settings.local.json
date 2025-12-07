@@ -15,7 +15,11 @@
       "Bash(npm run dev:*)",
       "Bash(netstat:*)",
       "Bash(findstr:*)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx wrangler d1 execute:*)",
+      "Bash(dir:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

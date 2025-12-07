@@ -207,19 +207,44 @@ async function getKiteClient(
 
 /**
  * GET /api/investments
- * Get all investments for current user
+ * Get all investments for current user, optionally filtered by broker account
  */
 investments.get('/', async (c) => {
   const session = c.get('session');
 
+  // Get active broker from header for filtering
+  const activeBrokerId = c.req.header('X-Active-Broker-ID');
+  const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
   try {
-    const userInvestments = await c.env.DB.prepare(`
-      SELECT i.*, b.name as basket_name, b.theme as basket_theme
-      FROM investments i
-      JOIN baskets b ON i.basket_id = b.id
-      WHERE i.user_id = ? AND i.status != 'SOLD'
-      ORDER BY i.invested_at DESC
-    `).bind(session.user_id).all();
+    let query: string;
+    let params: any[];
+
+    if (brokerAccountId) {
+      // Filter by specific broker account
+      query = `
+        SELECT i.*, b.name as basket_name, b.theme as basket_theme, ba.account_name as broker_account_name, ba.broker_type
+        FROM investments i
+        JOIN baskets b ON i.basket_id = b.id
+        LEFT JOIN broker_accounts ba ON i.broker_account_id = ba.id
+        WHERE i.user_id = ? AND i.status != 'SOLD' AND i.broker_account_id = ?
+        ORDER BY i.invested_at DESC
+      `;
+      params = [session.user_id, brokerAccountId];
+    } else {
+      // Return all investments with broker info
+      query = `
+        SELECT i.*, b.name as basket_name, b.theme as basket_theme, ba.account_name as broker_account_name, ba.broker_type
+        FROM investments i
+        JOIN baskets b ON i.basket_id = b.id
+        LEFT JOIN broker_accounts ba ON i.broker_account_id = ba.id
+        WHERE i.user_id = ? AND i.status != 'SOLD'
+        ORDER BY i.invested_at DESC
+      `;
+      params = [session.user_id];
+    }
+
+    const userInvestments = await c.env.DB.prepare(query).bind(...params).all();
 
     return c.json(successResponse(userInvestments.results));
   } catch (error) {
@@ -493,9 +518,9 @@ investments.post('/buy/:basketId', async (c) => {
 
     // Create transaction record
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, user_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, ?, 'BUY', ?, 'PENDING', ?)
-    `).bind(legacyAccountId, session.user_id, basketId, totalAmount, JSON.stringify(orders)).run();
+      INSERT INTO transactions (account_id, user_id, broker_account_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, ?, 'BUY', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, brokerAccountId, basketId, totalAmount, JSON.stringify(orders)).run();
 
     const transactionId = txResult.meta.last_row_id;
 
@@ -542,9 +567,9 @@ investments.post('/buy/:basketId', async (c) => {
           }, 0);
 
           const invResult = await c.env.DB.prepare(`
-            INSERT INTO investments (account_id, user_id, basket_id, invested_amount, current_value, status)
-            VALUES (?, ?, ?, ?, ?, 'ACTIVE')
-          `).bind(legacyAccountId, session.user_id, basketId, actualAmount, actualAmount).run();
+            INSERT INTO investments (account_id, user_id, broker_account_id, basket_id, invested_amount, current_value, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')
+          `).bind(legacyAccountId, session.user_id, brokerAccountId, basketId, actualAmount, actualAmount).run();
 
           const investmentId = invResult.meta.last_row_id;
 
@@ -858,9 +883,9 @@ investments.post('/:id/sell', async (c) => {
 
     // Create transaction
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, user_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, ?, ?, 'SELL', ?, 'PENDING', ?)
-    `).bind(legacyAccountId, session.user_id, investmentId, investment.basket_id, totalSellValue, JSON.stringify(orders)).run();
+      INSERT INTO transactions (account_id, user_id, broker_account_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, ?, ?, 'SELL', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, brokerAccountId, investmentId, investment.basket_id, totalSellValue, JSON.stringify(orders)).run();
 
     const transactionId = txResult.meta.last_row_id;
 
@@ -1258,9 +1283,9 @@ investments.post('/:id/rebalance', async (c) => {
 
     // Create transaction
     const txResult = await c.env.DB.prepare(`
-      INSERT INTO transactions (account_id, user_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
-      VALUES (?, ?, ?, ?, 'REBALANCE', ?, 'PENDING', ?)
-    `).bind(legacyAccountId, session.user_id, investmentId, investment.basket_id, buyAmount + sellAmount, JSON.stringify(orders)).run();
+      INSERT INTO transactions (account_id, user_id, broker_account_id, investment_id, basket_id, transaction_type, total_amount, status, order_details)
+      VALUES (?, ?, ?, ?, ?, 'REBALANCE', ?, 'PENDING', ?)
+    `).bind(legacyAccountId, session.user_id, brokerAccountId, investmentId, investment.basket_id, buyAmount + sellAmount, JSON.stringify(orders)).run();
 
     const transactionId = txResult.meta.last_row_id;
 
