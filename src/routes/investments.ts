@@ -1383,4 +1383,225 @@ investments.post('/:id/rebalance', async (c) => {
   }
 });
 
+/**
+ * GET /api/investments/:id/transactions
+ * Get transaction history for a specific investment (BUY, SELL, REBALANCE)
+ */
+investments.get('/:id/transactions', async (c) => {
+  const investmentId = parseInt(c.req.param('id'));
+  const session = c.get('session') as SessionData;
+  const type = c.req.query('type'); // Optional filter: BUY, SELL, REBALANCE
+  const limit = parseInt(c.req.query('limit') || '50');
+  const offset = parseInt(c.req.query('offset') || '0');
+
+  try {
+    // Verify investment belongs to user
+    const investment = await c.env.DB.prepare(`
+      SELECT i.*, b.name as basket_name
+      FROM investments i
+      JOIN baskets b ON i.basket_id = b.id
+      WHERE i.id = ? AND i.user_id = ?
+    `).bind(investmentId, session.user_id).first<Investment & { basket_name: string }>();
+
+    if (!investment) {
+      return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
+    }
+
+    // Build query for transactions
+    let query = `
+      SELECT
+        t.id,
+        t.transaction_type,
+        t.total_amount,
+        t.status,
+        t.order_details,
+        t.kite_order_ids,
+        t.error_message,
+        t.created_at,
+        t.completed_at
+      FROM transactions t
+      WHERE t.investment_id = ?
+    `;
+    const params: any[] = [investmentId];
+
+    if (type) {
+      query += ' AND t.transaction_type = ?';
+      params.push(type);
+    }
+
+    query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const transactions = await c.env.DB.prepare(query).bind(...params).all();
+
+    // Parse order_details JSON for each transaction
+    const transactionsWithDetails = transactions.results.map((tx: any) => {
+      let orderDetails = [];
+      let orderIds = [];
+
+      try {
+        if (tx.order_details) {
+          orderDetails = JSON.parse(tx.order_details);
+        }
+        if (tx.kite_order_ids) {
+          orderIds = JSON.parse(tx.kite_order_ids);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+
+      return {
+        ...tx,
+        order_details: orderDetails,
+        order_ids: orderIds,
+        orders_count: orderDetails.length,
+        buy_orders: orderDetails.filter((o: any) => o.transaction_type === 'BUY').length,
+        sell_orders: orderDetails.filter((o: any) => o.transaction_type === 'SELL').length
+      };
+    });
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) as count FROM transactions WHERE investment_id = ?';
+    const countParams: any[] = [investmentId];
+    if (type) {
+      countQuery += ' AND transaction_type = ?';
+      countParams.push(type);
+    }
+    const countResult = await c.env.DB.prepare(countQuery).bind(...countParams).first<{ count: number }>();
+
+    return c.json(successResponse({
+      investment_id: investmentId,
+      basket_name: investment.basket_name,
+      transactions: transactionsWithDetails,
+      pagination: {
+        total: countResult?.count || 0,
+        limit,
+        offset,
+        has_more: (countResult?.count || 0) > offset + limit
+      }
+    }));
+  } catch (error) {
+    console.error('Get investment transactions error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch transaction history'), 500);
+  }
+});
+
+/**
+ * GET /api/investments/:id/rebalance-history
+ * Get rebalance history specifically for an investment
+ */
+investments.get('/:id/rebalance-history', async (c) => {
+  const investmentId = parseInt(c.req.param('id'));
+  const session = c.get('session') as SessionData;
+  const limit = parseInt(c.req.query('limit') || '20');
+  const offset = parseInt(c.req.query('offset') || '0');
+
+  try {
+    // Verify investment belongs to user
+    const investment = await c.env.DB.prepare(`
+      SELECT i.*, b.name as basket_name
+      FROM investments i
+      JOIN baskets b ON i.basket_id = b.id
+      WHERE i.id = ? AND i.user_id = ?
+    `).bind(investmentId, session.user_id).first<Investment & { basket_name: string }>();
+
+    if (!investment) {
+      return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
+    }
+
+    // Get rebalance transactions
+    const rebalances = await c.env.DB.prepare(`
+      SELECT
+        t.id,
+        t.total_amount,
+        t.status,
+        t.order_details,
+        t.kite_order_ids,
+        t.error_message,
+        t.created_at,
+        t.completed_at
+      FROM transactions t
+      WHERE t.investment_id = ? AND t.transaction_type = 'REBALANCE'
+      ORDER BY t.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(investmentId, limit, offset).all();
+
+    // Parse and enrich rebalance data
+    const rebalanceHistory = rebalances.results.map((tx: any) => {
+      let orderDetails = [];
+      let orderIds = [];
+      let buyOrders: any[] = [];
+      let sellOrders: any[] = [];
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+
+      try {
+        if (tx.order_details) {
+          orderDetails = JSON.parse(tx.order_details);
+          buyOrders = orderDetails.filter((o: any) => o.transaction_type === 'BUY');
+          sellOrders = orderDetails.filter((o: any) => o.transaction_type === 'SELL');
+
+          // Calculate amounts (approximate since we store quantity not price)
+          buyOrders.forEach((o: any) => {
+            totalBuyAmount += o.quantity * (o.price || 0);
+          });
+          sellOrders.forEach((o: any) => {
+            totalSellAmount += o.quantity * (o.price || 0);
+          });
+        }
+        if (tx.kite_order_ids) {
+          orderIds = JSON.parse(tx.kite_order_ids);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+
+      return {
+        id: tx.id,
+        rebalanced_at: tx.created_at,
+        completed_at: tx.completed_at,
+        status: tx.status,
+        total_amount: tx.total_amount,
+        summary: {
+          total_orders: orderDetails.length,
+          buy_orders: buyOrders.length,
+          sell_orders: sellOrders.length,
+          net_amount: totalBuyAmount - totalSellAmount
+        },
+        orders: orderDetails.map((o: any) => ({
+          symbol: o.tradingsymbol,
+          exchange: o.exchange,
+          type: o.transaction_type,
+          quantity: o.quantity
+        })),
+        order_ids: orderIds,
+        error_message: tx.error_message
+      };
+    });
+
+    // Get counts
+    const countResult = await c.env.DB.prepare(`
+      SELECT COUNT(*) as count FROM transactions
+      WHERE investment_id = ? AND transaction_type = 'REBALANCE'
+    `).bind(investmentId).first<{ count: number }>();
+
+    return c.json(successResponse({
+      investment_id: investmentId,
+      basket_name: investment.basket_name,
+      last_rebalanced_at: investment.last_rebalanced_at,
+      rebalance_count: countResult?.count || 0,
+      history: rebalanceHistory,
+      pagination: {
+        total: countResult?.count || 0,
+        limit,
+        offset,
+        has_more: (countResult?.count || 0) > offset + limit
+      }
+    }));
+  } catch (error) {
+    console.error('Get rebalance history error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch rebalance history'), 500);
+  }
+});
+
 export default investments;

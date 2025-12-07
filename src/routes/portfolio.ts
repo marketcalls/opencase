@@ -291,34 +291,75 @@ portfolio.get('/performance/:investmentId', async (c) => {
 
 /**
  * GET /api/portfolio/transactions
- * Get transaction history
+ * Get transaction history for the current user
  */
 portfolio.get('/transactions', async (c) => {
   const session = c.get('session') as SessionData;
   const limit = parseInt(c.req.query('limit') || '50');
   const offset = parseInt(c.req.query('offset') || '0');
   const type = c.req.query('type'); // BUY, SELL, REBALANCE, SIP
-  
+
   try {
     let query = `
       SELECT t.*, b.name as basket_name
       FROM transactions t
       JOIN baskets b ON t.basket_id = b.id
-      WHERE t.account_id = ?
+      WHERE t.user_id = ?
     `;
-    const params: any[] = [session.account_id];
-    
+    const params: any[] = [session.user_id];
+
     if (type) {
       query += ' AND t.transaction_type = ?';
       params.push(type);
     }
-    
+
     query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
     params.push(limit, offset);
-    
+
     const transactions = await c.env.DB.prepare(query).bind(...params).all();
-    
-    return c.json(successResponse(transactions.results));
+
+    // Parse order_details for each transaction
+    const transactionsWithDetails = transactions.results.map((tx: any) => {
+      let orderDetails = [];
+      let orderIds = [];
+
+      try {
+        if (tx.order_details) {
+          orderDetails = JSON.parse(tx.order_details);
+        }
+        if (tx.kite_order_ids) {
+          orderIds = JSON.parse(tx.kite_order_ids);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+
+      return {
+        ...tx,
+        order_details: orderDetails,
+        order_ids: orderIds,
+        orders_count: orderDetails.length
+      };
+    });
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) as count FROM transactions WHERE user_id = ?';
+    const countParams: any[] = [session.user_id];
+    if (type) {
+      countQuery += ' AND transaction_type = ?';
+      countParams.push(type);
+    }
+    const countResult = await c.env.DB.prepare(countQuery).bind(...countParams).first<{ count: number }>();
+
+    return c.json(successResponse({
+      transactions: transactionsWithDetails,
+      pagination: {
+        total: countResult?.count || 0,
+        limit,
+        offset,
+        has_more: (countResult?.count || 0) > offset + limit
+      }
+    }));
   } catch (error) {
     console.error('Transactions error:', error);
     return c.json(errorResponse('ERROR', 'Failed to fetch transactions'), 500);
