@@ -450,31 +450,31 @@ portfolio.post('/sync', async (c) => {
 
 /**
  * GET /api/portfolio/zerodha-holdings
- * Get holdings directly from Zerodha account
+ * Get holdings directly from Zerodha account (legacy endpoint)
  */
 portfolio.get('/zerodha-holdings', async (c) => {
   const session = c.get('session') as SessionData;
-  
+
   try {
     const kite = await getKiteClient(c, session.account_id);
-    
+
     if (!kite) {
       return c.json(errorResponse('NOT_AUTHENTICATED', 'Please login to Zerodha'), 401);
     }
-    
+
     // Get holdings from Zerodha
     const holdings = await kite.getHoldings();
-    
+
     // Calculate totals
     let totalInvested = 0;
     let totalCurrent = 0;
-    
+
     const holdingsWithPnL = holdings.map(h => {
       const invested = h.quantity * h.average_price;
       const current = h.quantity * h.last_price;
       totalInvested += invested;
       totalCurrent += current;
-      
+
       return {
         ...h,
         invested_value: invested,
@@ -482,7 +482,7 @@ portfolio.get('/zerodha-holdings', async (c) => {
         pnl_percentage: h.average_price > 0 ? ((h.last_price - h.average_price) / h.average_price) * 100 : 0
       };
     });
-    
+
     return c.json(successResponse({
       holdings: holdingsWithPnL,
       summary: {
@@ -496,6 +496,226 @@ portfolio.get('/zerodha-holdings', async (c) => {
   } catch (error) {
     console.error('Zerodha holdings error:', error);
     return c.json(errorResponse('ERROR', 'Failed to fetch Zerodha holdings'), 500);
+  }
+});
+
+/**
+ * GET /api/portfolio/broker-holdings
+ * Get holdings from the active broker account (Zerodha or Angel One)
+ * Returns data in OpenAlgo common format
+ */
+portfolio.get('/broker-holdings', async (c) => {
+  const userSession = c.get('userSession') as { user_id: number; email: string; name: string; is_admin: boolean; expires_at: number };
+  const activeBrokerId = c.req.header('X-Active-Broker-ID');
+
+  console.log('[broker-holdings] User ID:', userSession?.user_id, 'Active Broker ID:', activeBrokerId);
+
+  try {
+    // Get the active broker account
+    let brokerAccount: any;
+
+    if (activeBrokerId) {
+      brokerAccount = await c.env.DB.prepare(`
+        SELECT * FROM broker_accounts
+        WHERE id = ? AND user_id = ? AND is_connected = 1
+      `).bind(parseInt(activeBrokerId), userSession.user_id).first();
+      console.log('[broker-holdings] Found by active broker ID:', brokerAccount?.id, brokerAccount?.broker_type);
+    } else {
+      // Get any connected broker account for the user
+      brokerAccount = await c.env.DB.prepare(`
+        SELECT * FROM broker_accounts
+        WHERE user_id = ? AND is_connected = 1
+        ORDER BY last_connected_at DESC
+        LIMIT 1
+      `).bind(userSession.user_id).first();
+      console.log('[broker-holdings] Found by user lookup:', brokerAccount?.id, brokerAccount?.broker_type);
+    }
+
+    if (!brokerAccount) {
+      console.log('[broker-holdings] No broker account found');
+      return c.json(errorResponse('NOT_CONNECTED', 'No broker account connected. Please connect your broker first.'), 401);
+    }
+
+    if (!brokerAccount.access_token) {
+      console.log('[broker-holdings] No access token');
+      return c.json(errorResponse('NOT_AUTHENTICATED', 'Broker session expired. Please reconnect.'), 401);
+    }
+
+    console.log('[broker-holdings] Broker type:', brokerAccount.broker_type, 'Has token:', !!brokerAccount.access_token);
+
+    const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+
+    let apiKey: string | null = null;
+    let apiSecret: string | null = null;
+
+    // Try account-specific credentials first
+    if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
+      console.log('[broker-holdings] Using account-specific credentials');
+      apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+      apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
+    } else {
+      // Fall back to app_config
+      const configKeyPrefix = brokerAccount.broker_type === 'zerodha' ? 'kite' : 'angelone';
+      console.log('[broker-holdings] Falling back to app_config with prefix:', configKeyPrefix);
+
+      const apiKeyConfig = await c.env.DB.prepare(
+        `SELECT config_value FROM app_config WHERE config_key = ?`
+      ).bind(`${configKeyPrefix}_api_key`).first<{ config_value: string }>();
+
+      const apiSecretConfig = await c.env.DB.prepare(
+        `SELECT config_value FROM app_config WHERE config_key = ?`
+      ).bind(`${configKeyPrefix}_api_secret`).first<{ config_value: string }>();
+
+      console.log('[broker-holdings] API key found:', !!apiKeyConfig?.config_value, 'API secret found:', !!apiSecretConfig?.config_value);
+
+      if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+        apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+        apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+      }
+    }
+
+    if (!apiKey || !apiSecret) {
+      console.log('[broker-holdings] API credentials not configured for', brokerAccount.broker_type);
+      return c.json(errorResponse('NOT_CONFIGURED', `${brokerAccount.broker_type} API credentials not configured. Please set up API keys in Settings.`), 400);
+    }
+
+    console.log('[broker-holdings] Credentials found, fetching holdings...');
+
+    // Helper function to get unified symbol from master_instruments
+    const getUnifiedSymbol = async (brokerSymbol: string, exchange: string, brokerType: string): Promise<string> => {
+      const column = brokerType === 'zerodha' ? 'zerodha_trading_symbol' : 'angelone_trading_symbol';
+      const result = await c.env.DB.prepare(
+        `SELECT symbol FROM master_instruments WHERE ${column} = ? AND exchange = ? LIMIT 1`
+      ).bind(brokerSymbol, exchange).first<{ symbol: string }>();
+
+      // Fallback: strip common suffixes if not found in DB
+      if (!result?.symbol) {
+        return brokerSymbol.replace(/-EQ|-BE|-MF|-SG/g, '');
+      }
+      return result.symbol;
+    };
+
+    let holdings: any[] = [];
+    let totalInvested = 0;
+    let totalCurrent = 0;
+
+    if (brokerAccount.broker_type === 'zerodha') {
+      // Zerodha holdings
+      const kite = new KiteClient(apiKey, apiSecret, brokerAccount.access_token);
+      const rawHoldings = await kite.getHoldings();
+
+      // Process holdings with unified symbol lookup
+      holdings = await Promise.all(rawHoldings.map(async (h) => {
+        const invested = h.quantity * h.average_price;
+        const current = h.quantity * h.last_price;
+        totalInvested += invested;
+        totalCurrent += current;
+
+        // Get unified symbol
+        const unifiedSymbol = await getUnifiedSymbol(h.tradingsymbol, h.exchange, 'zerodha');
+
+        // Common format (OpenAlgo style)
+        return {
+          symbol: unifiedSymbol,
+          broker_symbol: h.tradingsymbol,
+          exchange: h.exchange,
+          quantity: h.quantity,
+          product: 'CNC',
+          average_price: h.average_price,
+          last_price: h.last_price,
+          invested_value: invested,
+          current_value: current,
+          pnl: h.pnl,
+          pnl_percent: h.average_price > 0 ? ((h.last_price - h.average_price) / h.average_price) * 100 : 0
+        };
+      }));
+    } else if (brokerAccount.broker_type === 'angelone') {
+      // Angel One holdings
+      const response = await fetch('https://apiconnect.angelbroking.com/rest/secure/angelbroking/portfolio/v1/getAllHolding', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${brokerAccount.access_token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-UserType': 'USER',
+          'X-SourceID': 'WEB',
+          'X-ClientLocalIP': '127.0.0.1',
+          'X-ClientPublicIP': '127.0.0.1',
+          'X-MACAddress': '00:00:00:00:00:00',
+          'X-PrivateKey': apiKey
+        }
+      });
+
+      const data = await response.json() as any;
+
+      if (!data.status || !data.data) {
+        return c.json(errorResponse('BROKER_ERROR', data.message || 'Failed to fetch holdings from Angel One'), 500);
+      }
+
+      const rawHoldings = data.data.holdings || [];
+      const totalHolding = data.data.totalholding || {};
+
+      // Process holdings with unified symbol lookup
+      holdings = await Promise.all(rawHoldings.map(async (h: any) => {
+        const quantity = parseInt(h.quantity) || 0;
+        const avgPrice = parseFloat(h.averageprice) || 0;
+        const ltp = parseFloat(h.ltp) || 0;
+        const invested = quantity * avgPrice;
+        const current = quantity * ltp;
+        totalInvested += invested;
+        totalCurrent += current;
+
+        // Get unified symbol
+        const brokerSymbol = h.tradingsymbol || h.symbolname;
+        const unifiedSymbol = await getUnifiedSymbol(brokerSymbol, h.exchange, 'angelone');
+
+        // Common format (OpenAlgo style)
+        return {
+          symbol: unifiedSymbol,
+          broker_symbol: brokerSymbol,
+          exchange: h.exchange,
+          quantity: quantity,
+          product: h.product === 'DELIVERY' ? 'CNC' : h.product,
+          average_price: avgPrice,
+          last_price: ltp,
+          invested_value: invested,
+          current_value: current,
+          pnl: parseFloat(h.profitandloss) || (current - invested),
+          pnl_percent: parseFloat(h.pnlpercentage) || (avgPrice > 0 ? ((ltp - avgPrice) / avgPrice) * 100 : 0)
+        };
+      }));
+
+      // Use Angel One's calculated totals if available
+      if (totalHolding.totalholdingvalue) {
+        totalCurrent = parseFloat(totalHolding.totalholdingvalue) || totalCurrent;
+        totalInvested = parseFloat(totalHolding.totalinvvalue) || totalInvested;
+      }
+    } else {
+      return c.json(errorResponse('UNSUPPORTED_BROKER', `Broker type ${brokerAccount.broker_type} is not supported`), 400);
+    }
+
+    const totalPnl = totalCurrent - totalInvested;
+    const totalPnlPercent = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+
+    return c.json(successResponse({
+      broker: {
+        type: brokerAccount.broker_type,
+        name: brokerAccount.broker_type === 'zerodha' ? 'Zerodha' : 'Angel One',
+        account_name: brokerAccount.account_name,
+        user_id: brokerAccount.broker_user_id || brokerAccount.client_code
+      },
+      holdings: holdings,
+      summary: {
+        total_invested: totalInvested,
+        total_current: totalCurrent,
+        total_pnl: totalPnl,
+        total_pnl_percent: totalPnlPercent,
+        holdings_count: holdings.length
+      }
+    }));
+  } catch (error) {
+    console.error('Broker holdings error:', error);
+    return c.json(errorResponse('ERROR', 'Failed to fetch broker holdings'), 500);
   }
 });
 

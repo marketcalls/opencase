@@ -18,7 +18,8 @@ const state = {
   alerts: [],
   sips: [],
   holdings: [],
-  zerodhaHoldings: [],
+  zerodhaHoldings: [],  // Legacy - for backward compatibility
+  brokerHoldings: [],   // Holdings from connected broker (Zerodha or Angel One)
   currentView: 'dashboard',
   selectedBasket: null,
   selectedInvestment: null,
@@ -532,14 +533,27 @@ function renderDashboard() {
 }
 
 function renderHoldings() {
+  // Determine connected broker name for display
+  const connectedBroker = state.activeBrokerAccount;
+  const brokerName = connectedBroker ?
+    (connectedBroker.broker_type === 'zerodha' ? 'Zerodha' : 'Angel One') :
+    'Broker';
+  const isConnected = connectedBroker && connectedBroker.is_connected;
+
   return `
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Holdings</h1>
         <div class="flex space-x-2">
-          <button onclick="refreshZerodhaHoldings()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
-            <i class="fas fa-sync-alt mr-2"></i>Sync with Zerodha
-          </button>
+          ${isConnected ? `
+            <button onclick="refreshBrokerHoldings()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+              <i class="fas fa-sync-alt mr-2"></i>Sync with ${brokerName}
+            </button>
+          ` : `
+            <a href="/accounts" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">
+              <i class="fas fa-plug mr-2"></i>Connect Broker
+            </a>
+          `}
         </div>
       </div>
 
@@ -548,10 +562,10 @@ function renderHoldings() {
         <div class="border-b">
           <nav class="flex -mb-px">
             <button onclick="showHoldingsTab('portfolio')" id="tab-portfolio" class="tab-btn px-6 py-3 border-b-2 border-indigo-500 text-indigo-600 font-medium">
-              Portfolio Holdings
+              OpenCase Holdings
             </button>
-            <button onclick="showHoldingsTab('zerodha')" id="tab-zerodha" class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
-              Zerodha Holdings
+            <button onclick="showHoldingsTab('broker')" id="tab-broker" class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              ${brokerName} Holdings
             </button>
           </nav>
         </div>
@@ -2320,41 +2334,65 @@ function showHoldingsTab(tab) {
   });
   document.getElementById(`tab-${tab}`).classList.remove('border-transparent', 'text-gray-500');
   document.getElementById(`tab-${tab}`).classList.add('border-indigo-500', 'text-indigo-600');
-  
+
   if (tab === 'portfolio') {
     document.getElementById('holdings-content').innerHTML = renderPortfolioHoldings();
   } else {
-    refreshZerodhaHoldings();
+    refreshBrokerHoldings();
   }
 }
 
-async function refreshZerodhaHoldings() {
+async function refreshBrokerHoldings() {
+  const connectedBroker = state.activeBrokerAccount;
+  const brokerName = connectedBroker ?
+    (connectedBroker.broker_type === 'zerodha' ? 'Zerodha' : 'Angel One') :
+    'broker';
+
   document.getElementById('holdings-content').innerHTML = `
     <div class="text-center py-8">
       <i class="fas fa-spinner fa-spin text-2xl text-indigo-600"></i>
-      <p class="mt-2 text-gray-500">Fetching from Zerodha...</p>
+      <p class="mt-2 text-gray-500">Fetching from ${brokerName}...</p>
     </div>
   `;
-  
-  const res = await api.get('/portfolio/zerodha-holdings');
+
+  const res = await api.get('/portfolio/broker-holdings');
   if (res?.success) {
-    state.zerodhaHoldings = res.data.holdings;
-    renderZerodhaHoldings(res.data);
+    state.brokerHoldings = res.data.holdings;
+    renderBrokerHoldings(res.data);
   } else {
     document.getElementById('holdings-content').innerHTML = `
       <div class="text-center py-8 text-red-500">
         <i class="fas fa-exclamation-circle text-4xl mb-2"></i>
         <p>${res?.error?.message || 'Failed to fetch holdings'}</p>
+        ${!connectedBroker ? '<p class="mt-2"><a href="/accounts" class="text-indigo-600 hover:underline">Connect your broker account</a></p>' : ''}
       </div>
     `;
   }
 }
 
-function renderZerodhaHoldings(data) {
-  const { holdings, summary } = data;
-  
+// Legacy function for backward compatibility
+async function refreshZerodhaHoldings() {
+  return refreshBrokerHoldings();
+}
+
+function renderBrokerHoldings(data) {
+  const { broker, holdings, summary } = data;
+  const brokerName = broker?.name || 'Broker';
+
   document.getElementById('holdings-content').innerHTML = `
     <div class="space-y-6">
+      <!-- Broker Info -->
+      <div class="flex items-center justify-between bg-indigo-50 rounded-lg p-3">
+        <div class="flex items-center space-x-2">
+          <span class="text-sm font-medium text-indigo-700">
+            ${brokerName} ${broker?.user_id ? `(${broker.user_id})` : ''}
+          </span>
+          <span class="text-xs text-indigo-500">${broker?.account_name || ''}</span>
+        </div>
+        <span class="text-xs text-indigo-600">${holdings.length} holdings</span>
+      </div>
+
+      <!-- Summary Cards -->
       <div class="grid grid-cols-3 gap-4">
         <div class="bg-gray-50 rounded-lg p-4">
           <p class="text-sm text-gray-500">Total Invested</p>
@@ -2367,48 +2405,80 @@ function renderZerodhaHoldings(data) {
         <div class="bg-gray-50 rounded-lg p-4">
           <p class="text-sm text-gray-500">Total P&L</p>
           <p class="text-xl font-bold ${summary.total_pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
-            ${summary.total_pnl >= 0 ? '+' : ''}${formatCurrency(summary.total_pnl)} (${summary.total_pnl_percentage?.toFixed(2)}%)
+            ${summary.total_pnl >= 0 ? '+' : ''}${formatCurrency(summary.total_pnl)} (${summary.total_pnl_percent?.toFixed(2) || '0.00'}%)
           </p>
         </div>
       </div>
 
-      <table class="w-full">
-        <thead class="bg-gray-50">
-          <tr>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
-            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
-            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
-            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
-            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y">
-          ${holdings.map(h => `
-            <tr class="hover:bg-gray-50">
-              <td class="px-4 py-3">
-                <div>
-                  <p class="font-medium">${h.tradingsymbol}</p>
-                  <p class="text-xs text-gray-500">${h.exchange}</p>
-                </div>
-              </td>
-              <td class="px-4 py-3 text-right">${h.quantity}</td>
-              <td class="px-4 py-3 text-right">${formatCurrency(h.average_price)}</td>
-              <td class="px-4 py-3 text-right">${formatCurrency(h.last_price)}</td>
-              <td class="px-4 py-3 text-right">${formatCurrency(h.current_value)}</td>
-              <td class="px-4 py-3 text-right">
-                <span class="${h.pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
-                  ${h.pnl >= 0 ? '+' : ''}${formatCurrency(h.pnl)}
-                  <br>
-                  <span class="text-xs">${h.pnl_percentage?.toFixed(2)}%</span>
-                </span>
-              </td>
+      ${holdings.length === 0 ? `
+        <div class="text-center py-8 text-gray-500">
+          <i class="fas fa-box-open text-4xl mb-2 opacity-50"></i>
+          <p>No holdings found in your ${brokerName} account</p>
+        </div>
+      ` : `
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
+              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody class="divide-y">
+            ${holdings.map(h => `
+              <tr class="hover:bg-gray-50">
+                <td class="px-4 py-3">
+                  <div>
+                    <p class="font-medium">${h.symbol}</p>
+                    <p class="text-xs text-gray-500">${h.exchange}</p>
+                  </div>
+                </td>
+                <td class="px-4 py-3 text-right">${h.quantity}</td>
+                <td class="px-4 py-3 text-right">${formatCurrency(h.average_price)}</td>
+                <td class="px-4 py-3 text-right">${formatCurrency(h.last_price)}</td>
+                <td class="px-4 py-3 text-right">${formatCurrency(h.current_value)}</td>
+                <td class="px-4 py-3 text-right">
+                  <span class="${h.pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+                    ${h.pnl >= 0 ? '+' : ''}${formatCurrency(h.pnl)}
+                    <br>
+                    <span class="text-xs">${h.pnl_percent?.toFixed(2) || '0.00'}%</span>
+                  </span>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `}
     </div>
   `;
+}
+
+// Legacy function for backward compatibility
+function renderZerodhaHoldings(data) {
+  // Convert legacy format to new format
+  const convertedData = {
+    broker: { name: 'Zerodha', type: 'zerodha' },
+    holdings: data.holdings.map(h => ({
+      symbol: h.tradingsymbol,
+      exchange: h.exchange,
+      quantity: h.quantity,
+      average_price: h.average_price,
+      last_price: h.last_price,
+      current_value: h.current_value,
+      pnl: h.pnl,
+      pnl_percent: h.pnl_percentage
+    })),
+    summary: {
+      total_invested: data.summary.total_invested,
+      total_current: data.summary.total_current,
+      total_pnl: data.summary.total_pnl,
+      total_pnl_percent: data.summary.total_pnl_percentage
+    }
+  };
+  renderBrokerHoldings(convertedData);
 }
 
 // SIP functions
