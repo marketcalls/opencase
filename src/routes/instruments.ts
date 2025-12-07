@@ -507,32 +507,136 @@ async function insertAngelOneInstrumentsBatch(db: D1Database, instruments: any[]
 /**
  * Normalize index symbols to common format (like OpenAlgo)
  * This ensures consistent symbols across brokers for benchmarking
+ *
+ * Strategy:
+ * 1. Map F&O tradeable indices to their contract symbols (NIFTY, BANKNIFTY, etc.)
+ * 2. For other indices, normalize by removing spaces and standardizing format
  */
 function normalizeIndexSymbol(symbol: string): string {
-  const indexSymbolMap: Record<string, string> = {
-    // Zerodha format -> Common format
+  // First, uppercase for case-insensitive matching
+  const upperSymbol = symbol.toUpperCase();
+
+  // F&O Tradeable Indices - Map to their contract symbols
+  const fnoIndexMap: Record<string, string> = {
+    // NSE Main Indices (F&O eligible)
     'NIFTY 50': 'NIFTY',
     'NIFTY BANK': 'BANKNIFTY',
     'NIFTY FIN SERVICE': 'FINNIFTY',
     'NIFTY NEXT 50': 'NIFTYNXT50',
     'NIFTY MID SELECT': 'MIDCPNIFTY',
     'INDIA VIX': 'INDIAVIX',
-    'SNSX50': 'SENSEX50',
-    // Angel One format -> Common format (case variations)
-    'Nifty 50': 'NIFTY',
-    'Nifty Bank': 'BANKNIFTY',
-    'Nifty Fin Service': 'FINNIFTY',
-    'Nifty Next 50': 'NIFTYNXT50',
-    'India VIX': 'INDIAVIX',
-    // BSE indices
+
+    // BSE Main Indices (F&O eligible)
     'SENSEX': 'SENSEX',
+    'SENSEX 50': 'SENSEX50',
+    'SNSX50': 'SENSEX50',
     'BANKEX': 'BANKEX',
-    'BSE500': 'BSE500',
-    'BSE100': 'BSE100',
-    'BSE200': 'BSE200',
+    'SENSEX NEXT 30': 'SENSEXNXT30',
   };
 
-  return indexSymbolMap[symbol] || symbol;
+  // Check F&O map first
+  if (fnoIndexMap[upperSymbol]) {
+    return fnoIndexMap[upperSymbol];
+  }
+
+  // NSE Sectoral & Thematic Indices - Normalize format
+  const nseIndexMap: Record<string, string> = {
+    // Broad Market
+    'NIFTY 100': 'NIFTY100',
+    'NIFTY 200': 'NIFTY200',
+    'NIFTY 500': 'NIFTY500',
+    'NIFTY MIDCAP 50': 'NIFTYMIDCAP50',
+    'NIFTY MIDCAP 100': 'NIFTYMIDCAP100',
+    'NIFTY MIDCAP 150': 'NIFTYMIDCAP150',
+    'NIFTY SMLCAP 50': 'NIFTYSMLCAP50',
+    'NIFTY SMLCAP 100': 'NIFTYSMLCAP100',
+    'NIFTY SMLCAP 250': 'NIFTYSMLCAP250',
+    'NIFTY LARGEMID250': 'NIFTYLARGEMID250',
+    'NIFTY MIDSML 400': 'NIFTYMIDSML400',
+    'NIFTY MICROCAP250': 'NIFTYMICROCAP250',
+
+    // Sectoral
+    'NIFTY IT': 'NIFTYIT',
+    'NIFTY AUTO': 'NIFTYAUTO',
+    'NIFTY PHARMA': 'NIFTYPHARMA',
+    'NIFTY METAL': 'NIFTYMETAL',
+    'NIFTY REALTY': 'NIFTYREALTY',
+    'NIFTY ENERGY': 'NIFTYENERGY',
+    'NIFTY FMCG': 'NIFTYFMCG',
+    'NIFTY MEDIA': 'NIFTYMEDIA',
+    'NIFTY INFRA': 'NIFTYINFRA',
+    'NIFTY PSU BANK': 'NIFTYPSUBANK',
+    'NIFTY PVT BANK': 'NIFTYPVTBANK',
+    'NIFTY HEALTHCARE': 'NIFTYHEALTHCARE',
+    'NIFTY CONSUMPTION': 'NIFTYCONSUMPTION',
+    'NIFTY COMMODITIES': 'NIFTYCOMMODITIES',
+    'NIFTY OIL AND GAS': 'NIFTYOILGAS',
+    'NIFTY CPSE': 'NIFTYCPSE',
+    'NIFTY PSE': 'NIFTYPSE',
+    'NIFTY MNC': 'NIFTYMNC',
+    'NIFTY SERV SECTOR': 'NIFTYSERVICES',
+
+    // Thematic
+    'NIFTY ALPHA 50': 'NIFTYALPHA50',
+    'NIFTY HIGHBETA 50': 'NIFTYHIGHBETA50',
+    'NIFTY LOW VOL 50': 'NIFTYLOWVOL50',
+    'NIFTY DIV OPPS 50': 'NIFTYDIVOPPS50',
+    'NIFTY GROWSECT 15': 'NIFTYGROWSECT15',
+    'NIFTY IPO': 'NIFTYIPO',
+    'NIFTY HOUSING': 'NIFTYHOUSING',
+    'NIFTY EV': 'NIFTYEV',
+    'NIFTY IND DEFENCE': 'NIFTYDEFENCE',
+    'NIFTY INDIA MFG': 'NIFTYMFG',
+  };
+
+  if (nseIndexMap[upperSymbol]) {
+    return nseIndexMap[upperSymbol];
+  }
+
+  // BSE Indices - Normalize format
+  const bseIndexMap: Record<string, string> = {
+    'BSE100': 'BSE100',
+    'BSE200': 'BSE200',
+    'BSE500': 'BSE500',
+    'BSE 1000': 'BSE1000',
+    'BSE IT': 'BSEIT',
+    'BSE CD': 'BSECD',
+    'BSE CG': 'BSECG',
+    'BSE HC': 'BSEHC',
+    'MIDCAP': 'BSEMIDCAP',
+    'SMLCAP': 'BSESMLCAP',
+    'LRGCAP': 'BSELRGCAP',
+    'REALTY': 'BSEREALTY',
+    'POWER': 'BSEPOWER',
+    'METAL': 'BSEMETAL',
+    'OILGAS': 'BSEOILGAS',
+    'INFRA': 'BSEINFRA',
+    'AUTO': 'BSEAUTO',
+    'BSEFMC': 'BSEFMCG',
+    'BSEPSU': 'BSEPSU',
+    'BSEIPO': 'BSEIPO',
+    'CPSE': 'BSECPSE',
+    'FINANCIAL SERVICES': 'BSEFINSERV',
+    'FINSER': 'BSEFINSERV',
+  };
+
+  if (bseIndexMap[upperSymbol]) {
+    return bseIndexMap[upperSymbol];
+  }
+
+  // Generic normalization for unmapped indices:
+  // Remove spaces, special chars, standardize format
+  let normalized = upperSymbol
+    .replace(/\s+/g, '')           // Remove all spaces
+    .replace(/[&:]/g, '')          // Remove special chars
+    .replace(/-/g, '');            // Remove hyphens
+
+  // Keep as-is if already looks like a symbol (no spaces originally)
+  if (symbol === symbol.toUpperCase() && !symbol.includes(' ')) {
+    return symbol;
+  }
+
+  return normalized;
 }
 
 /**
