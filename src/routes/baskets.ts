@@ -38,11 +38,21 @@ async function getBrokerStockInfo(
   for (const stock of stocks) {
     let query: string;
     if (brokerType === 'angelone') {
+      // Exclude rows where angelone_token is string 'null' or actual NULL
       query = `SELECT symbol, exchange, angelone_token, angelone_trading_symbol
-        FROM master_instruments WHERE symbol = ? AND exchange = ? AND angelone_token IS NOT NULL LIMIT 1`;
+        FROM master_instruments
+        WHERE symbol = ? AND exchange = ?
+        AND angelone_token IS NOT NULL
+        AND angelone_token != 'null'
+        AND angelone_token != ''
+        LIMIT 1`;
     } else {
       query = `SELECT symbol, exchange, zerodha_token, zerodha_trading_symbol
-        FROM master_instruments WHERE symbol = ? AND exchange = ? AND zerodha_token IS NOT NULL LIMIT 1`;
+        FROM master_instruments
+        WHERE symbol = ? AND exchange = ?
+        AND zerodha_token IS NOT NULL
+        AND zerodha_token != 'null'
+        LIMIT 1`;
     }
 
     const instrument = await c.env.DB.prepare(query).bind(stock.trading_symbol, stock.exchange).first<any>();
@@ -54,12 +64,15 @@ async function getBrokerStockInfo(
           token: instrument.angelone_token,
           brokerSymbol: instrument.angelone_trading_symbol || stock.trading_symbol
         };
+        console.log(`AngelOne stock info: ${key} -> token=${instrument.angelone_token}, symbol=${instrument.angelone_trading_symbol}`);
       } else {
         result[key] = {
           token: instrument.zerodha_token?.toString() || '',
           brokerSymbol: instrument.zerodha_trading_symbol || stock.trading_symbol
         };
       }
+    } else {
+      console.warn(`No broker info found for ${stock.trading_symbol} on ${stock.exchange} (${brokerType})`);
     }
   }
 

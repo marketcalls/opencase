@@ -122,17 +122,23 @@ async function getBrokerStockInfo(
     let query: string;
 
     if (brokerType === 'angelone') {
+      // Exclude rows where angelone_token is string 'null' or actual NULL
       query = `
         SELECT symbol, exchange, angelone_token, angelone_trading_symbol
         FROM master_instruments
-        WHERE symbol = ? AND exchange = ? AND angelone_token IS NOT NULL
+        WHERE symbol = ? AND exchange = ?
+        AND angelone_token IS NOT NULL
+        AND angelone_token != 'null'
+        AND angelone_token != ''
         LIMIT 1
       `;
     } else {
       query = `
         SELECT symbol, exchange, zerodha_token, zerodha_trading_symbol
         FROM master_instruments
-        WHERE symbol = ? AND exchange = ? AND zerodha_token IS NOT NULL
+        WHERE symbol = ? AND exchange = ?
+        AND zerodha_token IS NOT NULL
+        AND zerodha_token != 'null'
         LIMIT 1
       `;
     }
