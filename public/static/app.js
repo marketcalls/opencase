@@ -2802,71 +2802,69 @@ function renderTransactionHistory() {
     return '<p class="text-gray-500 text-center py-4">No transactions found</p>';
   }
 
-  return `
-    <div class="space-y-3">
-      ${transactions.map(tx => {
-        const typeColors = {
-          'BUY': 'bg-green-100 text-green-700',
-          'SELL': 'bg-red-100 text-red-700',
-          'REBALANCE': 'bg-purple-100 text-purple-700',
-          'SIP': 'bg-blue-100 text-blue-700'
-        };
-        const statusColors = {
-          'COMPLETED': 'text-green-600',
-          'PARTIAL': 'text-orange-600',
-          'FAILED': 'text-red-600',
-          'PENDING': 'text-yellow-600',
-          'PROCESSING': 'text-blue-600'
-        };
+  const typeColors = {
+    'BUY': 'bg-green-100 text-green-700',
+    'SELL': 'bg-red-100 text-red-700',
+    'REBALANCE': 'bg-purple-100 text-purple-700',
+    'SIP': 'bg-blue-100 text-blue-700'
+  };
+  const statusColors = {
+    'COMPLETED': 'text-green-600',
+    'PARTIAL': 'text-orange-600',
+    'FAILED': 'text-red-600',
+    'PENDING': 'text-yellow-600',
+    'PROCESSING': 'text-blue-600'
+  };
 
-        return \`
-          <div class="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer" onclick="toggleTransactionDetails(\${tx.id})">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center space-x-3">
-                <span class="px-2 py-1 rounded text-xs font-medium \${typeColors[tx.transaction_type] || 'bg-gray-100 text-gray-700'}">
-                  \${tx.transaction_type}
-                </span>
-                <span class="text-sm text-gray-500">
-                  \${new Date(tx.created_at).toLocaleString()}
-                </span>
-              </div>
-              <div class="flex items-center space-x-4">
-                <span class="font-medium">\${formatCurrency(tx.total_amount)}</span>
-                <span class="text-sm \${statusColors[tx.status] || 'text-gray-600'}">\${tx.status}</span>
-                <i class="fas fa-chevron-down text-gray-400 transition-transform" id="tx-chevron-\${tx.id}"></i>
-              </div>
-            </div>
-            <div class="hidden mt-3 pt-3 border-t" id="tx-details-\${tx.id}">
-              <div class="text-sm text-gray-600 mb-2">
-                <span class="font-medium">\${tx.orders_count || 0}</span> orders
-                \${tx.buy_orders ? \`(\${tx.buy_orders} buy, \${tx.sell_orders} sell)\` : ''}
-              </div>
-              \${tx.order_details && tx.order_details.length > 0 ? \`
-                <div class="space-y-1">
-                  \${tx.order_details.slice(0, 5).map(order => \`
-                    <div class="flex items-center justify-between text-sm">
-                      <span class="flex items-center space-x-2">
-                        <span class="\${order.transaction_type === 'BUY' ? 'text-green-600' : 'text-red-600'}">\${order.transaction_type}</span>
-                        <span class="font-medium">\${order.tradingsymbol}</span>
-                      </span>
-                      <span>\${order.quantity} qty</span>
-                    </div>
-                  \`).join('')}
-                  \${tx.order_details.length > 5 ? \`<div class="text-sm text-gray-500">...and \${tx.order_details.length - 5} more orders</div>\` : ''}
-                </div>
-              \` : ''}
-              \${tx.error_message ? \`<div class="text-red-600 text-sm mt-2">\${tx.error_message}</div>\` : ''}
-            </div>
-          </div>
-        \`;
-      }).join('')}
-    </div>
-  `;
+  return '<div class="space-y-3">' + transactions.map(tx => {
+    const typeColor = typeColors[tx.transaction_type] || 'bg-gray-100 text-gray-700';
+    const statusColor = statusColors[tx.status] || 'text-gray-600';
+
+    let ordersHtml = '';
+    if (tx.order_details && tx.order_details.length > 0) {
+      ordersHtml = '<div class="space-y-1">' + tx.order_details.slice(0, 5).map(order => {
+        const orderColor = order.transaction_type === 'BUY' ? 'text-green-600' : 'text-red-600';
+        return '<div class="flex items-center justify-between text-sm">' +
+          '<span class="flex items-center space-x-2">' +
+          '<span class="' + orderColor + '">' + order.transaction_type + '</span>' +
+          '<span class="font-medium">' + order.tradingsymbol + '</span>' +
+          '</span>' +
+          '<span>' + order.quantity + ' qty</span>' +
+          '</div>';
+      }).join('');
+      if (tx.order_details.length > 5) {
+        ordersHtml += '<div class="text-sm text-gray-500">...and ' + (tx.order_details.length - 5) + ' more orders</div>';
+      }
+      ordersHtml += '</div>';
+    }
+
+    const errorHtml = tx.error_message ? '<div class="text-red-600 text-sm mt-2">' + tx.error_message + '</div>' : '';
+    const buyInfo = tx.buy_orders ? '(' + tx.buy_orders + ' buy, ' + tx.sell_orders + ' sell)' : '';
+
+    return '<div class="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer" onclick="toggleTransactionDetails(' + tx.id + ')">' +
+      '<div class="flex items-center justify-between">' +
+      '<div class="flex items-center space-x-3">' +
+      '<span class="px-2 py-1 rounded text-xs font-medium ' + typeColor + '">' + tx.transaction_type + '</span>' +
+      '<span class="text-sm text-gray-500">' + new Date(tx.created_at).toLocaleString() + '</span>' +
+      '</div>' +
+      '<div class="flex items-center space-x-4">' +
+      '<span class="font-medium">' + formatCurrency(tx.total_amount) + '</span>' +
+      '<span class="text-sm ' + statusColor + '">' + tx.status + '</span>' +
+      '<i class="fas fa-chevron-down text-gray-400 transition-transform" id="tx-chevron-' + tx.id + '"></i>' +
+      '</div>' +
+      '</div>' +
+      '<div class="hidden mt-3 pt-3 border-t" id="tx-details-' + tx.id + '">' +
+      '<div class="text-sm text-gray-600 mb-2"><span class="font-medium">' + (tx.orders_count || 0) + '</span> orders ' + buyInfo + '</div>' +
+      ordersHtml +
+      errorHtml +
+      '</div>' +
+      '</div>';
+  }).join('') + '</div>';
 }
 
 function toggleTransactionDetails(txId) {
-  const details = document.getElementById(\`tx-details-\${txId}\`);
-  const chevron = document.getElementById(\`tx-chevron-\${txId}\`);
+  const details = document.getElementById('tx-details-' + txId);
+  const chevron = document.getElementById('tx-chevron-' + txId);
   if (details && chevron) {
     details.classList.toggle('hidden');
     chevron.classList.toggle('rotate-180');
@@ -2876,12 +2874,12 @@ function toggleTransactionDetails(txId) {
 async function filterTransactions(type) {
   state.transactionFilter = type === 'all' ? null : type;
   await loadInvestmentTransactions(state.selectedInvestment.id);
-  render();
+  renderApp();
 }
 
 async function loadInvestmentTransactions(investmentId) {
-  const filter = state.transactionFilter ? \`?type=\${state.transactionFilter}\` : '';
-  const res = await api.get(\`/investments/\${investmentId}/transactions\${filter}\`);
+  const filter = state.transactionFilter ? '?type=' + state.transactionFilter : '';
+  const res = await api.get('/investments/' + investmentId + '/transactions' + filter);
   if (res.success) {
     state.investmentTransactions = res.data.transactions;
   }
