@@ -11,8 +11,29 @@ import type {
 } from '../types';
 import { successResponse, errorResponse, decrypt } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
+import { AngelOneClient } from '../lib/angelone';
 
 const instruments = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+
+/**
+ * Helper to get AngelOne client for a user
+ */
+async function getAuthenticatedAngelClient(c: any, userId: number): Promise<AngelOneClient | null> {
+  const brokerAccount = await c.env.DB.prepare(`
+    SELECT * FROM broker_accounts
+    WHERE user_id = ? AND broker_type = 'angelone' AND is_connected = 1 AND is_active = 1
+    LIMIT 1
+  `).bind(userId).first<any>();
+
+  if (!brokerAccount?.access_token || !brokerAccount?.api_key_encrypted) {
+    return null;
+  }
+
+  const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
+  const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+
+  return new AngelOneClient(apiKey, brokerAccount.access_token);
+}
 
 /**
  * Helper to get KiteClient from app config or account
@@ -612,10 +633,11 @@ instruments.get('/search', async (c) => {
     const params: any[] = [`${query}%`, `${query}%`, `${query}%`, `%${query}%`];
 
     // Filter by broker if connected - only show instruments with tokens for that broker
+    // Also exclude string 'null' values (data quality issue from imports)
     if (activeBroker === 'zerodha') {
-      sql += ' AND zerodha_token IS NOT NULL';
+      sql += " AND zerodha_token IS NOT NULL AND zerodha_token != 'null'";
     } else if (activeBroker === 'angelone') {
-      sql += ' AND angelone_token IS NOT NULL';
+      sql += " AND angelone_token IS NOT NULL AND angelone_token != 'null' AND angelone_token != ''";
     }
 
     if (exchange) {
@@ -658,9 +680,35 @@ instruments.get('/search', async (c) => {
           }
         }
       } else if (activeBroker === 'angelone') {
-        // TODO: Implement AngelOne LTP fetching
-        // For now, use stored last_price from instruments table
-        console.log('AngelOne LTP fetching not yet implemented, using stored prices');
+        const angelClient = await getAuthenticatedAngelClient(c, userSession.user_id);
+
+        if (angelClient) {
+          try {
+            // Build instruments array with angelone tokens
+            const instrumentsForLtp = results.results
+              .filter(i => (i as any).angelone_token && (i as any).angelone_token !== 'null')
+              .map(i => ({
+                exchange: i.exchange,
+                tradingsymbol: (i as any).angelone_trading_symbol || i.symbol,
+                symboltoken: (i as any).angelone_token
+              }));
+
+            if (instrumentsForLtp.length > 0) {
+              const ltpData = await angelClient.getLTP(instrumentsForLtp);
+
+              instrumentsWithLtp = results.results.map(inst => {
+                const angelSymbol = (inst as any).angelone_trading_symbol || inst.symbol;
+                const key = `${inst.exchange}:${angelSymbol}`;
+                return {
+                  ...inst,
+                  last_price: ltpData[key]?.last_price || null
+                };
+              });
+            }
+          } catch (e) {
+            console.error('Failed to fetch LTP from AngelOne:', e);
+          }
+        }
       }
     }
     
