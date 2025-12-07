@@ -1526,7 +1526,7 @@ app.get('/contracts', async (c) => {
 
         <!-- Main Content -->
         <main class="flex-1 p-6 bg-gray-100 min-h-screen">
-            <div class="max-w-5xl">
+            <div class="max-w-5xl mx-auto">
                 <div class="mb-6">
                     <h1 class="text-2xl font-bold text-gray-900">Master Contracts</h1>
                     <p class="text-gray-600">Download and manage instrument data from brokers</p>
