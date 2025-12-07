@@ -16,8 +16,55 @@ import type {
 } from '../types';
 import { successResponse, errorResponse, validateBasketWeights, decrypt, calculateEqualWeights } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
+import { AngelOneClient } from '../lib/angelone';
 
 const baskets = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+
+/**
+ * Helper to get broker-specific stock info from master_instruments
+ */
+interface BrokerStockInfo {
+  token: string;
+  brokerSymbol: string;
+}
+
+async function getBrokerStockInfo(
+  c: any,
+  stocks: Array<{ trading_symbol: string; exchange: string }>,
+  brokerType: string
+): Promise<Record<string, BrokerStockInfo>> {
+  const result: Record<string, BrokerStockInfo> = {};
+
+  for (const stock of stocks) {
+    let query: string;
+    if (brokerType === 'angelone') {
+      query = `SELECT symbol, exchange, angelone_token, angelone_trading_symbol
+        FROM master_instruments WHERE symbol = ? AND exchange = ? AND angelone_token IS NOT NULL LIMIT 1`;
+    } else {
+      query = `SELECT symbol, exchange, zerodha_token, zerodha_trading_symbol
+        FROM master_instruments WHERE symbol = ? AND exchange = ? AND zerodha_token IS NOT NULL LIMIT 1`;
+    }
+
+    const instrument = await c.env.DB.prepare(query).bind(stock.trading_symbol, stock.exchange).first<any>();
+
+    if (instrument) {
+      const key = `${stock.exchange}:${stock.trading_symbol}`;
+      if (brokerType === 'angelone') {
+        result[key] = {
+          token: instrument.angelone_token,
+          brokerSymbol: instrument.angelone_trading_symbol || stock.trading_symbol
+        };
+      } else {
+        result[key] = {
+          token: instrument.zerodha_token?.toString() || '',
+          brokerSymbol: instrument.zerodha_trading_symbol || stock.trading_symbol
+        };
+      }
+    }
+  }
+
+  return result;
+}
 
 // Middleware to check authentication
 baskets.use('*', async (c, next) => {
@@ -168,46 +215,98 @@ baskets.get('/:id', async (c) => {
     // Get live prices if session exists
     let stocksWithPrices = stocks.results;
     let minInvestment = basket.min_investment;
-    
+
+    // Get active broker from header
+    const activeBrokerId = c.req.header('X-Active-Broker-ID');
+    const brokerAccountId = activeBrokerId ? parseInt(activeBrokerId) : null;
+
     if (session && stocks.results.length > 0) {
       try {
-        // Get connected broker account for LTP
-        const brokerAccount = await c.env.DB.prepare(
-          'SELECT * FROM broker_accounts WHERE user_id = ? AND is_connected = 1 AND is_active = 1 LIMIT 1'
-        ).bind(session.user_id).first<any>();
+        // Get broker account - prefer active broker, fallback to first connected
+        let brokerAccount: any = null;
+        if (brokerAccountId) {
+          brokerAccount = await c.env.DB.prepare(
+            'SELECT * FROM broker_accounts WHERE id = ? AND is_connected = 1 AND is_active = 1'
+          ).bind(brokerAccountId).first<any>();
+        }
+        if (!brokerAccount) {
+          brokerAccount = await c.env.DB.prepare(
+            'SELECT * FROM broker_accounts WHERE user_id = ? AND is_connected = 1 AND is_active = 1 LIMIT 1'
+          ).bind(session.user_id).first<any>();
+        }
 
         if (brokerAccount?.access_token) {
           const encryptionKey = c.env.ENCRYPTION_KEY || 'opencase-default-key-32chars!!!';
-          let apiKey = '';
-          let apiSecret = '';
+          const brokerType = brokerAccount.broker_type || 'zerodha';
+          let quotes: Record<string, { last_price: number }> = {};
 
-          // Get API credentials from broker account
-          if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
-            apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
-            apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
-          }
-          
-          // If not found, try app_config
-          if (!apiKey) {
-            const apiKeyConfig = await c.env.DB.prepare(
-              "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
-            ).first<{ config_value: string }>();
-            
-            const apiSecretConfig = await c.env.DB.prepare(
-              "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
-            ).first<{ config_value: string }>();
-            
-            if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
-              apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
-              apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+          if (brokerType === 'angelone') {
+            // AngelOne broker
+            if (brokerAccount.api_key_encrypted) {
+              const apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+              const angelClient = new AngelOneClient(apiKey, brokerAccount.access_token);
+
+              // Get broker-specific stock info
+              const brokerStockInfo = await getBrokerStockInfo(c, stocks.results, brokerType);
+
+              const instrumentsWithTokens = stocks.results
+                .filter(s => brokerStockInfo[`${s.exchange}:${s.trading_symbol}`])
+                .map(s => {
+                  const info = brokerStockInfo[`${s.exchange}:${s.trading_symbol}`];
+                  return {
+                    exchange: s.exchange,
+                    tradingsymbol: info.brokerSymbol,
+                    symboltoken: info.token
+                  };
+                });
+
+              if (instrumentsWithTokens.length > 0) {
+                const rawQuotes = await angelClient.getLTP(instrumentsWithTokens);
+
+                // Map quotes back to unified symbols
+                for (const stock of stocks.results) {
+                  const info = brokerStockInfo[`${stock.exchange}:${stock.trading_symbol}`];
+                  if (info && rawQuotes[`${stock.exchange}:${info.brokerSymbol}`]) {
+                    quotes[`${stock.exchange}:${stock.trading_symbol}`] = rawQuotes[`${stock.exchange}:${info.brokerSymbol}`];
+                  }
+                }
+              }
+            }
+          } else {
+            // Zerodha broker
+            let apiKey = '';
+            let apiSecret = '';
+
+            if (brokerAccount.api_key_encrypted && brokerAccount.api_secret_encrypted) {
+              apiKey = await decrypt(brokerAccount.api_key_encrypted, encryptionKey);
+              apiSecret = await decrypt(brokerAccount.api_secret_encrypted, encryptionKey);
+            }
+
+            // If not found, try app_config
+            if (!apiKey) {
+              const apiKeyConfig = await c.env.DB.prepare(
+                "SELECT config_value FROM app_config WHERE config_key = 'kite_api_key'"
+              ).first<{ config_value: string }>();
+
+              const apiSecretConfig = await c.env.DB.prepare(
+                "SELECT config_value FROM app_config WHERE config_key = 'kite_api_secret'"
+              ).first<{ config_value: string }>();
+
+              if (apiKeyConfig?.config_value && apiSecretConfig?.config_value) {
+                apiKey = await decrypt(apiKeyConfig.config_value, encryptionKey);
+                apiSecret = await decrypt(apiSecretConfig.config_value, encryptionKey);
+              }
+            }
+
+            if (apiKey) {
+              const kite = new KiteClient(apiKey, apiSecret, brokerAccount.access_token);
+              const instruments = stocks.results.map(s => `${s.exchange}:${s.trading_symbol}`);
+              quotes = await kite.getLTP(instruments);
             }
           }
-          
-          if (apiKey) {
-            const kite = new KiteClient(apiKey, apiSecret, brokerAccount.access_token);
-            const instruments = stocks.results.map(s => `${s.exchange}:${s.trading_symbol}`);
-            const quotes = await kite.getLTP(instruments);
-            
+
+          // Apply quotes to stocks
+          if (Object.keys(quotes).length > 0) {
             stocksWithPrices = stocks.results.map(stock => {
               const key = `${stock.exchange}:${stock.trading_symbol}`;
               const quote = quotes[key];
@@ -216,18 +315,16 @@ baskets.get('/:id', async (c) => {
                 last_price: quote?.last_price || null
               };
             });
-            
+
             // Calculate minimum investment
-            if (Object.keys(quotes).length > 0) {
-              let maxMinInvestment = 0;
-              for (const stock of stocksWithPrices) {
-                if ((stock as any).last_price) {
-                  const minForStock = ((stock as any).last_price / stock.weight_percentage) * 100;
-                  maxMinInvestment = Math.max(maxMinInvestment, minForStock);
-                }
+            let maxMinInvestment = 0;
+            for (const stock of stocksWithPrices) {
+              if ((stock as any).last_price) {
+                const minForStock = ((stock as any).last_price / stock.weight_percentage) * 100;
+                maxMinInvestment = Math.max(maxMinInvestment, minForStock);
               }
-              minInvestment = Math.ceil(maxMinInvestment);
             }
+            minInvestment = Math.ceil(maxMinInvestment);
           }
         }
       } catch (priceError) {
