@@ -1902,7 +1902,12 @@ async function viewInvestment(investmentId) {
   const res = await api.get(`/investments/${investmentId}`);
   if (res?.success) {
     state.selectedInvestment = res.data;
+    state.transactionFilter = null;
+    state.investmentTransactions = [];
     state.currentView = 'investment-detail';
+    renderApp();
+    // Load transactions in background
+    await loadInvestmentTransactions(investmentId);
     renderApp();
   }
 }
@@ -2770,8 +2775,116 @@ function renderInvestmentDetail() {
           </tbody>
         </table>
       </div>
+
+      <!-- Transaction History Section -->
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-semibold">Transaction History</h2>
+          <div class="flex space-x-2">
+            <button onclick="filterTransactions('all')" class="px-3 py-1 text-sm rounded-lg ${!state.transactionFilter || state.transactionFilter === 'all' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600'}">All</button>
+            <button onclick="filterTransactions('BUY')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'BUY' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}">Buy</button>
+            <button onclick="filterTransactions('SELL')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}">Sell</button>
+            <button onclick="filterTransactions('REBALANCE')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'REBALANCE' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}">Rebalance</button>
+          </div>
+        </div>
+        <div id="transaction-history-list">
+          ${renderTransactionHistory()}
+        </div>
+      </div>
     </div>
   `;
+}
+
+function renderTransactionHistory() {
+  const transactions = state.investmentTransactions || [];
+
+  if (transactions.length === 0) {
+    return '<p class="text-gray-500 text-center py-4">No transactions found</p>';
+  }
+
+  return `
+    <div class="space-y-3">
+      ${transactions.map(tx => {
+        const typeColors = {
+          'BUY': 'bg-green-100 text-green-700',
+          'SELL': 'bg-red-100 text-red-700',
+          'REBALANCE': 'bg-purple-100 text-purple-700',
+          'SIP': 'bg-blue-100 text-blue-700'
+        };
+        const statusColors = {
+          'COMPLETED': 'text-green-600',
+          'PARTIAL': 'text-orange-600',
+          'FAILED': 'text-red-600',
+          'PENDING': 'text-yellow-600',
+          'PROCESSING': 'text-blue-600'
+        };
+
+        return \`
+          <div class="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer" onclick="toggleTransactionDetails(\${tx.id})">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-3">
+                <span class="px-2 py-1 rounded text-xs font-medium \${typeColors[tx.transaction_type] || 'bg-gray-100 text-gray-700'}">
+                  \${tx.transaction_type}
+                </span>
+                <span class="text-sm text-gray-500">
+                  \${new Date(tx.created_at).toLocaleString()}
+                </span>
+              </div>
+              <div class="flex items-center space-x-4">
+                <span class="font-medium">\${formatCurrency(tx.total_amount)}</span>
+                <span class="text-sm \${statusColors[tx.status] || 'text-gray-600'}">\${tx.status}</span>
+                <i class="fas fa-chevron-down text-gray-400 transition-transform" id="tx-chevron-\${tx.id}"></i>
+              </div>
+            </div>
+            <div class="hidden mt-3 pt-3 border-t" id="tx-details-\${tx.id}">
+              <div class="text-sm text-gray-600 mb-2">
+                <span class="font-medium">\${tx.orders_count || 0}</span> orders
+                \${tx.buy_orders ? \`(\${tx.buy_orders} buy, \${tx.sell_orders} sell)\` : ''}
+              </div>
+              \${tx.order_details && tx.order_details.length > 0 ? \`
+                <div class="space-y-1">
+                  \${tx.order_details.slice(0, 5).map(order => \`
+                    <div class="flex items-center justify-between text-sm">
+                      <span class="flex items-center space-x-2">
+                        <span class="\${order.transaction_type === 'BUY' ? 'text-green-600' : 'text-red-600'}">\${order.transaction_type}</span>
+                        <span class="font-medium">\${order.tradingsymbol}</span>
+                      </span>
+                      <span>\${order.quantity} qty</span>
+                    </div>
+                  \`).join('')}
+                  \${tx.order_details.length > 5 ? \`<div class="text-sm text-gray-500">...and \${tx.order_details.length - 5} more orders</div>\` : ''}
+                </div>
+              \` : ''}
+              \${tx.error_message ? \`<div class="text-red-600 text-sm mt-2">\${tx.error_message}</div>\` : ''}
+            </div>
+          </div>
+        \`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function toggleTransactionDetails(txId) {
+  const details = document.getElementById(\`tx-details-\${txId}\`);
+  const chevron = document.getElementById(\`tx-chevron-\${txId}\`);
+  if (details && chevron) {
+    details.classList.toggle('hidden');
+    chevron.classList.toggle('rotate-180');
+  }
+}
+
+async function filterTransactions(type) {
+  state.transactionFilter = type === 'all' ? null : type;
+  await loadInvestmentTransactions(state.selectedInvestment.id);
+  render();
+}
+
+async function loadInvestmentTransactions(investmentId) {
+  const filter = state.transactionFilter ? \`?type=\${state.transactionFilter}\` : '';
+  const res = await api.get(\`/investments/\${investmentId}/transactions\${filter}\`);
+  if (res.success) {
+    state.investmentTransactions = res.data.transactions;
+  }
 }
 
 // Initialize
