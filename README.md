@@ -1,6 +1,6 @@
 # OpenCase - Build Your Own Stock Baskets
 
-An open-source, self-hostable platform for creating, managing, and investing in custom stock baskets. Supports multiple brokers including Zerodha Kite and Angel One.
+An open-source, self-hostable platform for creating, managing, and investing in custom stock baskets. Supports multiple brokers including Zerodha Kite and Angel One with unified symbol format.
 
 ## Project Overview
 
@@ -10,7 +10,7 @@ An open-source, self-hostable platform for creating, managing, and investing in 
 
 ## Features
 
-### Completed Features 
+### Core Features
 
 1. **User Authentication System**
    - Email/Password signup and login
@@ -23,6 +23,7 @@ An open-source, self-hostable platform for creating, managing, and investing in 
    - Angel One Smart API (TOTP)
    - Modular architecture for adding new brokers
    - Unified symbol format across brokers
+   - Common holdings format for both brokers
 
 3. **Broker Account Management**
    - Add multiple broker accounts per user
@@ -30,8 +31,9 @@ An open-source, self-hostable platform for creating, managing, and investing in 
    - TOTP-based authentication for Angel One
    - OAuth flow for Zerodha
    - Encrypted credential storage
+   - Active broker selection
 
-3. **Basket Management**
+4. **Basket Management**
    - Create custom stock baskets (up to 100 stocks)
    - Set custom weightages (must sum to 100%)
    - Equal weight allocation with auto-calculation
@@ -39,31 +41,54 @@ An open-source, self-hostable platform for creating, managing, and investing in 
    - Risk level classification (low/moderate/high)
    - Benchmark selection for comparison
 
-4. **Pre-built Templates**
+5. **Pre-built Templates**
    - IT Leaders, Banking Giants, Pharma Champions
    - FMCG Essentials, Auto Revolution
    - Nifty 50 Core, Dividend Kings, Small Cap Stars
 
-5. **Investment Features**
+6. **Investment Features**
    - One-click basket purchase
    - Direct order placement via broker API
    - Investment tracking with P&L
    - Portfolio rebalancing
    - Holdings sync from broker
 
-6. **SIP (Systematic Investment Plan)**
+7. **SIP (Systematic Investment Plan)**
    - Daily/Weekly/Monthly frequency
    - Configurable investment dates
    - Pause/Resume/Cancel SIPs
 
-7. **Alerts System**
+8. **Alerts System**
    - Price alerts, Rebalance alerts
    - P&L alerts, SIP reminders
+
+### Master Instruments & Indices
+
+9. **Unified Instrument Database**
+   - Download instruments from Zerodha and AngelOne
+   - Merged master instruments with unified symbols
+   - Broker-specific tokens preserved for API calls
+   - Real-time LTP fetching from connected broker
+
+10. **Index Support for Benchmarking**
+    - NSE indices (NSE_INDEX exchange)
+    - BSE indices (BSE_INDEX exchange)
+    - Normalized index symbols (NIFTY, BANKNIFTY, FINNIFTY, etc.)
+    - 190+ NSE indices, 110+ BSE indices
+    - Common format across Zerodha and AngelOne
+
+### Holdings & Portfolio
+
+11. **Broker Holdings Integration**
+    - Fetch holdings from connected broker (Zerodha/AngelOne)
+    - Common holdings format: symbol, exchange, quantity, product, pnl
+    - Unified symbol lookup from master instruments
+    - OpenCase holdings vs Broker holdings comparison
 
 ## API Endpoints
 
 ### Setup & Configuration
-- `GET /api/setup/status` - Check configuration status (shows configured brokers)
+- `GET /api/setup/status` - Check configuration status
 - `GET /api/setup/brokers` - List supported brokers
 - `POST /api/setup/configure` - Save broker API credentials
 - `PUT /api/setup/default-broker` - Set default broker
@@ -84,32 +109,54 @@ An open-source, self-hostable platform for creating, managing, and investing in 
 - `POST /api/broker-accounts/:id/disconnect` - Disconnect from broker
 - `GET /api/broker-accounts/active` - Get active connected account
 
-### Legacy Authentication (for backward compatibility)
-- `GET /api/auth/login` - Redirect to broker login
-- `GET /api/auth/callback` - OAuth callback handler
-- `GET /api/auth/status` - Check authentication status
-- `POST /api/auth/logout` - Clear session
-
 ### Baskets
 - `GET /api/baskets` - List user's baskets
 - `GET /api/baskets/templates` - Get pre-built templates
-- `POST /api/baskets` - Create new basket
+- `POST /api/baskets` - Create new basket (up to 100 stocks)
 - `PUT /api/baskets/:id` - Update basket
+- `DELETE /api/baskets/:id` - Delete basket
 - `POST /api/baskets/calculate-weights` - Calculate equal weights
 
 ### Investments
 - `GET /api/investments` - List investments
 - `POST /api/investments/buy/:basketId` - Generate buy orders
+- `GET /api/investments/:id` - Get investment details
 - `POST /api/investments/:id/rebalance` - Execute rebalance
 
 ### Portfolio
-- `GET /api/portfolio/summary` - Portfolio summary
-- `GET /api/portfolio/holdings` - Get holdings from broker
+- `GET /api/portfolio/summary` - Portfolio summary with P&L
+- `GET /api/portfolio/holdings` - Get OpenCase holdings
+- `GET /api/portfolio/broker-holdings` - Get holdings from connected broker
 
 ### Instruments
 - `GET /api/instruments/search?q=:query` - Search stocks with LTP
-- `GET /api/instruments/download` - Download master contracts
-- `GET /api/instruments/status` - Check download status
+- `GET /api/instruments/indices` - List all indices for benchmarking
+- `GET /api/instruments/indices?exchange=NSE_INDEX` - NSE indices only
+- `GET /api/instruments/indices?q=NIFTY` - Search indices
+- `GET /api/instruments/popular` - Popular stocks with LTP
+- `GET /api/instruments/ltp?symbols=NSE:TCS,NSE:INFY` - Get LTP for symbols
+- `POST /api/instruments/download` - Download Zerodha instruments
+- `POST /api/instruments/download-angelone` - Download AngelOne instruments
+- `GET /api/instruments/status` - Check download status with counts
+
+### SIP
+- `GET /api/sip` - List user's SIPs
+- `POST /api/sip` - Create new SIP
+- `PUT /api/sip/:id` - Update SIP
+- `POST /api/sip/:id/pause` - Pause SIP
+- `POST /api/sip/:id/resume` - Resume SIP
+- `DELETE /api/sip/:id` - Cancel SIP
+
+### Legacy Authentication
+- `GET /api/auth/login` - Redirect to broker login
+- `GET /api/auth/callback` - OAuth callback handler
+- `GET /api/auth/status` - Check authentication status
+- `POST /api/auth/logout` - Clear session
+
+## Documentation
+
+- **[Design Documentation](./design/)** - Architecture, UI/UX, Components, Database, API specs
+- **[Common Indices Reference](./docs/COMMON-INDICES.md)** - Index symbol mapping for Zerodha & AngelOne
 
 ## Local Development
 
@@ -129,10 +176,7 @@ npm run db:seed
 npm run build
 
 # Start development server
-npm run dev:sandbox
-
-# Or with PM2 (sandbox/Linux)
-pm2 start ecosystem.config.cjs
+npm run dev
 ```
 
 ### Windows Setup
@@ -142,7 +186,7 @@ pm2 start ecosystem.config.cjs
 3. **Install**: `npm install`
 4. **Setup DB**: `npm run db:migrate:local && npm run db:seed`
 5. **Build**: `npm run build`
-6. **Run**: `npm run dev:sandbox`
+6. **Run**: `npm run dev`
 7. **Open**: http://localhost:3000
 
 ### User Flow
@@ -155,14 +199,15 @@ pm2 start ecosystem.config.cjs
 5. Add your first broker account (Zerodha or Angel One)
 6. Enter API credentials
 7. Click "Connect" to authenticate with your broker
-8. Start creating baskets!
+8. Download master instruments from `/contracts` page
+9. Start creating baskets!
 
 **Adding Broker Accounts:**
 1. Go to `/accounts` page
 2. Click "Add Account"
 3. Select broker type (Zerodha or Angel One)
 4. Enter API credentials
-5. For Zerodha: Click Connect → OAuth redirect
+5. For Zerodha: Click Connect -> OAuth redirect
 6. For Angel One: Enter TOTP code when prompted
 
 **Get API credentials from:**
@@ -278,6 +323,42 @@ npx wrangler pages secret put ENCRYPTION_KEY --project-name opencase
 - **Build**: Vite
 - **Deployment**: Cloudflare Pages
 
+## Project Structure
+
+```
+opencase/
+├── src/
+│   ├── index.tsx          # Main app with HTML routes
+│   ├── routes/            # API route handlers
+│   │   ├── auth.ts        # Legacy auth routes
+│   │   ├── baskets.ts     # Basket CRUD
+│   │   ├── broker.ts      # Broker account management
+│   │   ├── instruments.ts # Stock search, indices, downloads
+│   │   ├── investments.ts # Investment operations
+│   │   ├── portfolio.ts   # Holdings & portfolio
+│   │   ├── setup.ts       # Platform setup
+│   │   ├── sip.ts         # SIP management
+│   │   └── user.ts        # User authentication
+│   ├── lib/               # Utility libraries
+│   │   ├── kite.ts        # Zerodha API client
+│   │   ├── angelone.ts    # AngelOne API client
+│   │   └── utils.ts       # Common utilities
+│   └── types/             # TypeScript definitions
+├── public/
+│   └── static/
+│       └── app.js         # Frontend JavaScript
+├── migrations/            # D1 database migrations
+├── design/                # Design documentation
+│   ├── ARCHITECTURE.md
+│   ├── UI-UX-SPEC.md
+│   ├── COMPONENTS.md
+│   ├── DATABASE.md
+│   └── API.md
+├── docs/                  # Additional documentation
+│   └── COMMON-INDICES.md  # Index symbol reference
+└── wrangler.jsonc         # Cloudflare configuration
+```
+
 ## Pending Features
 
 - [ ] Historical performance charts
@@ -286,16 +367,24 @@ npx wrangler pages secret put ENCRYPTION_KEY --project-name opencase
 - [ ] Auto-execute SIP orders
 - [ ] Dark mode UI
 - [ ] Mobile responsive improvements
+- [ ] Export portfolio reports (PDF/Excel)
+- [ ] Dividend tracking
+- [ ] Corporate actions handling
 
 ## License
 
 AGPL3 License - See LICENSE file for details.
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution guidelines.
+
 ## Disclaimer
 
-This platform is not affiliated with Zerodha, Angel One, or Smallcase. Use at your own risk. Always verify orders before executing.
+This platform is not affiliated with Zerodha, Angel One, or Smallcase. Use at your own risk. Always verify orders before executing. This is not investment advice.
 
 ---
 
-**Last Updated**: December 6, 2025
-**Status**: ✅ Active Development
+**Last Updated**: December 8, 2025
+**Status**: Active Development
+**Version**: 1.0.0
