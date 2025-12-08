@@ -382,8 +382,8 @@ baskets.post('/', async (c) => {
       return c.json(errorResponse('INVALID_INPUT', 'Name and stocks are required'), 400);
     }
 
-    if (body.stocks.length > 20) {
-      return c.json(errorResponse('INVALID_INPUT', 'Maximum 20 stocks per basket'), 400);
+    if (body.stocks.length > 100) {
+      return c.json(errorResponse('INVALID_INPUT', 'Maximum 100 stocks per basket'), 400);
     }
 
     if (!validateBasketWeights(body.stocks)) {
@@ -653,8 +653,8 @@ baskets.post('/calculate-weights', async (c) => {
       return c.json(errorResponse('INVALID_INPUT', 'At least one stock is required'), 400);
     }
     
-    if (stocks.length > 20) {
-      return c.json(errorResponse('INVALID_INPUT', 'Maximum 20 stocks allowed'), 400);
+    if (stocks.length > 100) {
+      return c.json(errorResponse('INVALID_INPUT', 'Maximum 100 stocks allowed'), 400);
     }
     
     let result: Array<{ trading_symbol: string; exchange: string; weight_percentage: number }>;

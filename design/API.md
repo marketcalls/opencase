@@ -390,7 +390,7 @@ Create new basket.
 
 **Validation**:
 - Name: required, max 100 chars
-- Stocks: 1-20 stocks
+- Stocks: 1-100 stocks
 - Weights: must sum to 100%
 
 #### PUT /api/baskets/:id

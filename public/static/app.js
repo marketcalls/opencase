@@ -740,7 +740,7 @@ function renderCreateBasket() {
               <div class="text-center py-12 text-gray-500">
                 <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
                 <p class="text-lg">Search and add stocks to your basket</p>
-                <p class="text-sm">You can add up to 20 stocks</p>
+                <p class="text-sm">You can add up to 100 stocks</p>
               </div>
             ` : renderStocksTable()}
           </div>
@@ -749,7 +749,7 @@ function renderCreateBasket() {
           <div class="px-6 py-4 border-t bg-gray-50 flex justify-between items-center">
             <div class="flex items-center space-x-6 text-sm">
               <span class="text-gray-500">Total Weight: <span id="totalWeight" class="font-bold ${getTotalWeight() === 100 ? 'text-green-600' : 'text-red-600'}">${getTotalWeight().toFixed(2)}%</span></span>
-              <span class="text-gray-500"><span id="stockCount">${state.basketStocks.length}</span>/20 stocks</span>
+              <span class="text-gray-500"><span id="stockCount">${state.basketStocks.length}</span>/100 stocks</span>
             </div>
             <div class="flex space-x-4">
               <button type="button" onclick="setView('baskets')" class="px-6 py-2 border rounded-lg hover:bg-gray-100">
@@ -1655,8 +1655,8 @@ function renderSearchResults() {
 function addStock(stock) {
   console.log('[DEBUG] addStock called with:', stock);
 
-  if (state.basketStocks.length >= 20) {
-    showNotification('Maximum 20 stocks allowed', 'warning');
+  if (state.basketStocks.length >= 100) {
+    showNotification('Maximum 100 stocks allowed', 'warning');
     return;
   }
 
@@ -1723,7 +1723,7 @@ function removeStock(index) {
         <div class="text-center py-12 text-gray-500">
           <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
           <p class="text-lg">Search and add stocks to your basket</p>
-          <p class="text-sm">You can add up to 20 stocks</p>
+          <p class="text-sm">You can add up to 100 stocks</p>
         </div>
       `;
     }
@@ -1752,7 +1752,7 @@ function removeStock(index) {
         <div class="text-center py-12 text-gray-500">
           <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
           <p class="text-lg">Search and add stocks to your basket</p>
-          <p class="text-sm">You can add up to 20 stocks</p>
+          <p class="text-sm">You can add up to 100 stocks</p>
         </div>
       `;
     }

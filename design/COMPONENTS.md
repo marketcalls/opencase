@@ -208,7 +208,7 @@ const state = {
 |-------|------|------------|
 | name | text | required |
 | theme | select | optional |
-| stocks | array | min 1, max 20 |
+| stocks | array | min 1, max 100 |
 | weights | array | sum = 100% |
 | investmentAmount | number | min varies by basket |
 

@@ -32,7 +32,7 @@ An open-source, self-hostable platform for creating, managing, and investing in 
    - Encrypted credential storage
 
 3. **Basket Management**
-   - Create custom stock baskets (up to 20 stocks)
+   - Create custom stock baskets (up to 100 stocks)
    - Set custom weightages (must sum to 100%)
    - Equal weight allocation with auto-calculation
    - Theme-based categorization
