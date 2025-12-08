@@ -33,6 +33,9 @@ const state = {
   investBasketMinAmount: 0   // Minimum investment for the basket being invested in
 };
 
+// Global chart instance
+let performanceChartInstance = null;
+
 // API Helper
 const api = {
   async request(endpoint, options = {}) {
@@ -1948,7 +1951,7 @@ async function editBasket(basketId) {
   }
 }
 
-async function viewInvestment(investmentId) {
+{/*async function viewInvestment(investmentId) {
   const res = await api.get(`/investments/${investmentId}`);
   if (res?.success) {
     state.selectedInvestment = res.data;
@@ -1960,7 +1963,35 @@ async function viewInvestment(investmentId) {
     await loadInvestmentTransactions(investmentId);
     renderApp();
   }
+}*/}
+
+async function viewInvestment(investmentId) {
+  console.log('[DEBUG] Viewing investment:', investmentId);
+  
+  // Find investment in state
+  const investment = state.investments.find(inv => inv.id === investmentId);
+  if (!investment) {
+    showNotification('Investment not found', 'error');
+    return;
+  }
+
+  // Load full investment details including holdings
+  const response = await api.get(`/investments/${investmentId}`);
+  if (response?.success) {
+    state.selectedInvestment = response.data;
+  } else {
+    state.selectedInvestment = investment;
+  }
+
+  state.currentView = 'investment-detail';
+  renderApp();
+
+  // Auto-load performance chart (1Y by default)
+  setTimeout(() => {
+    loadPerformanceChart(investmentId, '1Y');
+  }, 100);
 }
+
 
 async function investInBasket(basketId) {
   // Fetch basket details to get minimum investment
@@ -2787,121 +2818,206 @@ async function refreshBasketPrices(basketId) {
   }
 }
 
+/**
+ * Render investment holdings table
+ */
+function renderInvestmentHoldings(investment) {
+  if (!investment.holdings || investment.holdings.length === 0) {
+    return `
+      <div class="p-12 text-center text-gray-500">
+        <i class="fas fa-chart-line text-4xl mb-4 opacity-50"></i>
+        <p>No holdings data available</p>
+      </div>
+    `;
+  }
+
+  return `
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Price</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">LTP</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Current Value</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        ${investment.holdings.map(holding => {
+          const currentValue = holding.quantity * (holding.current_price || holding.average_price);
+          const investedValue = holding.quantity * holding.average_price;
+          const pnl = currentValue - investedValue;
+          const pnlPct = investedValue > 0 ? ((pnl / investedValue) * 100).toFixed(2) : 0;
+          
+          return `
+            <tr class="hover:bg-gray-50">
+              <td class="px-6 py-4 whitespace-nowrap">
+                <div class="flex items-center">
+                  <div>
+                    <div class="text-sm font-medium text-gray-900">${holding.trading_symbol}</div>
+                    <div class="text-xs text-gray-500">${holding.exchange}</div>
+                  </div>
+                </div>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
+                ${holding.quantity}
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
+                ${formatCurrency(holding.average_price)}
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
+                ${formatCurrency(holding.current_price || holding.average_price)}
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium text-gray-900">
+                ${formatCurrency(currentValue)}
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <div class="${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+                  ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}
+                  <div class="text-xs">
+                    ${pnl >= 0 ? '+' : ''}${pnlPct}%
+                  </div>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+
 function renderInvestmentDetail() {
-  const inv = state.selectedInvestment;
-  if (!inv) return '<p>Loading...</p>';
-  
-  const pnl = (inv.current_value || inv.invested_amount) - inv.invested_amount;
-  const pnlPct = inv.invested_amount > 0 ? ((pnl / inv.invested_amount) * 100).toFixed(2) : 0;
-  
+  const investment = state.selectedInvestment;
+  if (!investment) {
+    setView('investments');
+    return '';
+  }
+
+  const pnl = (investment.current_value || investment.invested_amount) - investment.invested_amount;
+  const pnlPct = investment.invested_amount > 0 
+    ? ((pnl / investment.invested_amount) * 100).toFixed(2) 
+    : 0;
+
   return `
     <div class="space-y-6">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center space-x-4">
-          <button onclick="setView('investments')" class="text-gray-500 hover:text-gray-700">
-            <i class="fas fa-arrow-left"></i>
-          </button>
-          <div>
-            <h1 class="text-2xl font-bold text-gray-900">${inv.basket_name}</h1>
-            <p class="text-gray-500">Invested on ${new Date(inv.invested_at).toLocaleDateString()}</p>
-          </div>
-        </div>
-        <div class="flex space-x-2">
-          <button onclick="rebalanceInvestment(${inv.id})" class="border border-indigo-600 text-indigo-600 px-4 py-2 rounded-lg hover:bg-indigo-50">
-            <i class="fas fa-sync-alt mr-2"></i>Rebalance
-          </button>
-          <button onclick="sellInvestment(${inv.id})" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
-            <i class="fas fa-sign-out-alt mr-2"></i>Sell
-          </button>
-        </div>
+      <div class="flex items-center space-x-4">
+        <button onclick="setView('investments')" class="text-gray-500 hover:text-gray-700">
+          <i class="fas fa-arrow-left"></i>
+        </button>
+        <h1 class="text-2xl font-bold text-gray-900">${investment.basket_name}</h1>
+        <span class="px-3 py-1 text-sm rounded-full ${investment.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
+          ${investment.status}
+        </span>
       </div>
 
-      <div class="grid grid-cols-4 gap-4">
-        <div class="bg-white rounded-xl p-4 shadow-sm">
-          <p class="text-sm text-gray-500">Invested</p>
-          <p class="text-xl font-bold">${formatCurrency(inv.invested_amount)}</p>
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <p class="text-sm text-gray-500">Invested Amount</p>
+          <p class="text-2xl font-bold">${formatCurrency(investment.invested_amount)}</p>
+          <p class="text-xs text-gray-500 mt-1">${new Date(investment.invested_at).toLocaleDateString('en-IN')}</p>
         </div>
-        <div class="bg-white rounded-xl p-4 shadow-sm">
+
+        <div class="bg-white rounded-xl p-6 shadow-sm">
           <p class="text-sm text-gray-500">Current Value</p>
-          <p class="text-xl font-bold">${formatCurrency(inv.current_value)}</p>
+          <p class="text-2xl font-bold">${formatCurrency(investment.current_value || investment.invested_amount)}</p>
         </div>
-        <div class="bg-white rounded-xl p-4 shadow-sm">
-          <p class="text-sm text-gray-500">P&L</p>
-          <p class="text-xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <p class="text-sm text-gray-500">Total P&L</p>
+          <p class="text-2xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
             ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}
           </p>
-        </div>
-        <div class="bg-white rounded-xl p-4 shadow-sm">
-          <p class="text-sm text-gray-500">Returns</p>
-          <p class="text-xl font-bold ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
+          <p class="text-sm ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}">
             ${pnl >= 0 ? '+' : ''}${pnlPct}%
           </p>
         </div>
+
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <p class="text-sm text-gray-500">Holdings</p>
+          <p class="text-2xl font-bold">${investment.holdings?.length || 0}</p>
+          <p class="text-xs text-gray-500 mt-1">stocks</p>
+        </div>
       </div>
 
+      <!-- Performance Chart (NEW!) -->
       <div class="bg-white rounded-xl shadow-sm p-6">
-        <h2 class="font-semibold mb-4">Holdings</h2>
-        <table class="w-full">
-          <thead class="bg-gray-50">
-            <tr>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Price</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">LTP</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Value</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">P&L</th>
-              <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Weight</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y">
-            ${(inv.holdings || []).map(h => {
-              const value = h.quantity * (h.current_price || h.average_price);
-              const hPnl = value - (h.quantity * h.average_price);
-              return `
-                <tr class="hover:bg-gray-50">
-                  <td class="px-4 py-3 font-medium">${h.trading_symbol}</td>
-                  <td class="px-4 py-3 text-right">${h.quantity}</td>
-                  <td class="px-4 py-3 text-right">${formatCurrency(h.average_price)}</td>
-                  <td class="px-4 py-3 text-right">${formatCurrency(h.current_price)}</td>
-                  <td class="px-4 py-3 text-right">${formatCurrency(value)}</td>
-                  <td class="px-4 py-3 text-right">
-                    <span class="${hPnl >= 0 ? 'text-green-600' : 'text-red-600'}">
-                      ${hPnl >= 0 ? '+' : ''}${formatCurrency(hPnl)}
-                    </span>
-                  </td>
-                  <td class="px-4 py-3 text-right">
-                    <div class="flex items-center justify-end space-x-2">
-                      <span class="text-gray-500">${h.target_weight?.toFixed(1)}%</span>
-                      <span class="${Math.abs(h.actual_weight - h.target_weight) > 5 ? 'text-orange-600' : 'text-green-600'}">
-                        → ${h.actual_weight?.toFixed(1)}%
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Transaction History Section -->
-      <div class="bg-white rounded-xl shadow-sm p-6">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="font-semibold">Transaction History</h2>
+        <div class="flex justify-between items-center mb-6">
+          <h2 class="text-lg font-semibold text-gray-900">Performance</h2>
+          
+          <!-- Period Selector -->
           <div class="flex space-x-2">
-            <button onclick="filterTransactions('all')" class="px-3 py-1 text-sm rounded-lg ${!state.transactionFilter || state.transactionFilter === 'all' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600'}">All</button>
-            <button onclick="filterTransactions('BUY')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'BUY' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}">Buy</button>
-            <button onclick="filterTransactions('SELL')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}">Sell</button>
-            <button onclick="filterTransactions('REBALANCE')" class="px-3 py-1 text-sm rounded-lg ${state.transactionFilter === 'REBALANCE' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}">Rebalance</button>
+            <button onclick="loadPerformanceChart(${investment.id}, '1M')" 
+              id="period-1M" 
+              class="period-btn px-3 py-1 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50">
+              1M
+            </button>
+            <button onclick="loadPerformanceChart(${investment.id}, '3M')" 
+              id="period-3M" 
+              class="period-btn px-3 py-1 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50">
+              3M
+            </button>
+            <button onclick="loadPerformanceChart(${investment.id}, '6M')" 
+              id="period-6M" 
+              class="period-btn px-3 py-1 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50">
+              6M
+            </button>
+            <button onclick="loadPerformanceChart(${investment.id}, '1Y')" 
+              id="period-1Y" 
+              class="period-btn px-3 py-1 text-sm rounded-lg bg-indigo-600 text-white">
+              1Y
+            </button>
+            <button onclick="loadPerformanceChart(${investment.id}, 'ALL')" 
+              id="period-ALL" 
+              class="period-btn px-3 py-1 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50">
+              ALL
+            </button>
           </div>
         </div>
-        <div id="transaction-history-list">
-          ${renderTransactionHistory()}
+
+        <!-- Chart Container -->
+          <div class="relative" style="height: 400px;">
+            <canvas id="performanceChart"></canvas>
+  
+          <div id="chartLoading" class="hidden absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+          <i class="fas fa-spinner fa-spin text-4xl text-indigo-600"></i>
+             </div>
+          </div>
+ 
+
+        <!-- Error State -->
+        <div id="chartError" class="hidden text-center py-12 text-gray-500">
+          <i class="fas fa-exclamation-triangle text-4xl mb-4 opacity-50"></i>
+          <p id="chartErrorMessage">Failed to load performance data</p>
         </div>
+      </div>
+
+      <!-- Holdings Table -->
+      <div class="bg-white rounded-xl shadow-sm">
+        <div class="p-6 border-b">
+          <h2 class="font-semibold text-gray-900">Holdings</h2>
+        </div>
+        <div class="overflow-x-auto">
+          ${renderInvestmentHoldings(investment)}
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex space-x-4">
+        <button onclick="rebalanceInvestment(${investment.id})" class="flex-1 bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition">
+          <i class="fas fa-balance-scale mr-2"></i>Rebalance Portfolio
+        </button>
+        <button onclick="sellInvestment(${investment.id})" class="flex-1 bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition">
+          <i class="fas fa-hand-holding-usd mr-2"></i>Sell Investment
+        </button>
       </div>
     </div>
   `;
 }
+
 
 function renderTransactionHistory() {
   const transactions = state.investmentTransactions || [];
@@ -2992,6 +3108,187 @@ async function loadInvestmentTransactions(investmentId) {
     state.investmentTransactions = res.data.transactions;
   }
 }
+
+
+/**
+ * Load performance chart data and render
+ */
+async function loadPerformanceChart(investmentId, period = '1Y') {
+  const chartContainer = document.getElementById('performanceChart');
+  const loadingEl = document.getElementById('chartLoading');
+  const errorEl = document.getElementById('chartError');
+  
+  if (!chartContainer) return;
+
+  // Show loading
+  if (loadingEl) loadingEl.classList.remove('hidden');
+  if (errorEl) errorEl.classList.add('hidden');
+
+  // Update period button active state
+  document.querySelectorAll('.period-btn').forEach(btn => {
+    btn.classList.remove('bg-indigo-600', 'text-white');
+    btn.classList.add('border', 'border-gray-300', 'text-gray-600');
+  });
+  const activeBtn = document.getElementById(`period-${period}`);
+  if (activeBtn) {
+    activeBtn.classList.add('bg-indigo-600', 'text-white');
+    activeBtn.classList.remove('border', 'border-gray-300', 'text-gray-600');
+  }
+
+  try {
+    const response = await api.get(`/investments/${investmentId}/performance?period=${period}`);
+    
+    if (loadingEl) loadingEl.classList.add('hidden');
+
+    if (!response?.success || !response.data) {
+      throw new Error(response?.error?.message || 'Failed to load performance data');
+    }
+
+    renderPerformanceChart(response.data);
+
+  } catch (error) {
+    console.error('Error loading performance chart:', error);
+    if (loadingEl) loadingEl.classList.add('hidden');
+    if (errorEl) {
+      errorEl.classList.remove('hidden');
+      const errorMsg = document.getElementById('chartErrorMessage');
+      if (errorMsg) {
+        errorMsg.textContent = error.message || 'Failed to load performance data';
+      }
+    }
+  }
+}
+
+/**
+ * Render Chart.js performance chart
+ */
+function renderPerformanceChart(data) {
+  const chartCanvas = document.getElementById('performanceChart');
+  if (!chartCanvas) return;
+
+  // Destroy existing chart instance
+  if (performanceChartInstance) {
+    performanceChartInstance.destroy();
+  }
+
+  const ctx = chartCanvas.getContext('2d');
+
+  performanceChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.dates.map(date => {
+        const d = new Date(date);
+        return d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+      }),
+      datasets: [
+        {
+          label: 'Portfolio',
+          data: data.values,
+          borderColor: '#4F46E5', // Indigo 600
+          backgroundColor: 'rgba(79, 70, 229, 0.1)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.3,
+          fill: true
+        },
+        {
+          label: data.benchmark_name,
+          data: data.benchmark_values,
+          borderColor: '#6B7280', // Gray 500
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.3,
+          fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'end',
+          labels: {
+            usePointStyle: true,
+            pointStyle: 'circle',
+            padding: 15,
+            font: {
+              size: 12,
+              family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+            }
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          titleColor: '#111827',
+          bodyColor: '#374151',
+          borderColor: '#E5E7EB',
+          borderWidth: 1,
+          padding: 12,
+          displayColors: true,
+          callbacks: {
+            label: function(context) {
+              let label = context.dataset.label || '';
+              if (label) {
+                label += ': ';
+              }
+              label += context.parsed.y.toFixed(2);
+              return label;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: {
+            display: false
+          },
+          ticks: {
+            font: {
+              size: 11
+            },
+            maxRotation: 0,
+            autoSkipPadding: 20
+          }
+        },
+        y: {
+          beginAtZero: false,
+          grid: {
+            color: '#F3F4F6'
+          },
+          ticks: {
+            font: {
+              size: 11
+            },
+            callback: function(value) {
+              return value.toFixed(0);
+            }
+          },
+          title: {
+            display: true,
+            text: 'Normalized to 100',
+            font: {
+              size: 12,
+              weight: '500'
+            },
+            color: '#6B7280'
+          }
+        }
+      }
+    }
+  });
+}
+
 
 // Initialize
 initApp();

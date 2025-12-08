@@ -16,9 +16,10 @@ import type {
   BuyBasketRequest,
   SellBasketRequest,
   RebalancePreview,
-  KiteOrder
+  KiteOrder,
+  PerformanceData, InvestmentHistory, BenchmarkData
 } from '../types';
-import { successResponse, errorResponse, decrypt, calculatePercentageChange } from '../lib/utils';
+import { successResponse, errorResponse, decrypt, calculatePercentageChange, normalizeToBase100, getISTDateString } from '../lib/utils';
 import { KiteClient } from '../lib/kite';
 import { AngelOneClient, AngelOneOrder } from '../lib/angelone';
 
@@ -1632,6 +1633,192 @@ investments.get('/:id/rebalance-history', async (c) => {
   } catch (error) {
     console.error('Get rebalance history error:', error);
     return c.json(errorResponse('ERROR', 'Failed to fetch rebalance history'), 500);
+  }
+});
+
+/**
+ * GET /api/investments/:id/performance
+ * Get historical performance data for investment with benchmark comparison
+ * 
+ * Query Parameters:
+ * - period: '1M' | '3M' | '6M' | '1Y' | 'ALL' (default: '1Y')
+ * - benchmark: Benchmark symbol (default: from basket.benchmark_symbol)
+ */
+investments.get('/:id/performance', async (c) => {
+  try {
+    const session = c.get('session');
+    if (!session) {
+      return c.json(errorResponse('UNAUTHORIZED', 'Authentication required'), 401);
+    }
+
+    const investmentId = parseInt(c.req.param('id'));
+    const period = c.req.query('period') || '1Y';
+    const customBenchmark = c.req.query('benchmark');
+
+    // Validate investment exists and belongs to user
+    const investment = await c.env.DB.prepare(`
+      SELECT 
+        i.id,
+        i.user_id,
+        i.basket_id,
+        i.invested_at,
+        b.benchmark_symbol,
+        b.name as basket_name
+      FROM investments i
+      JOIN baskets b ON b.id = i.basket_id
+      WHERE i.id = ? AND i.user_id = ?
+    `).bind(investmentId, session.user_id).first<{
+      id: number;
+      user_id: number;
+      basket_id: number;
+      invested_at: string;
+      benchmark_symbol: string;
+      basket_name: string;
+    }>();
+
+    if (!investment) {
+      return c.json(errorResponse('NOT_FOUND', 'Investment not found'), 404);
+    }
+
+    // Calculate date range based on period
+    const endDate = new Date();
+    let startDate = new Date(endDate); // Clone endDate, not invested_at
+
+    switch (period) {
+  case '1M':
+    startDate.setMonth(startDate.getMonth() - 1);
+    break;
+  case '3M':
+    startDate.setMonth(startDate.getMonth() - 3);
+    break;
+  case '6M':
+    startDate.setMonth(startDate.getMonth() - 6);
+    break;
+  case '1Y':
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    break;
+  case 'ALL':
+    startDate = new Date(investment.invested_at);
+    break;
+  default:
+    startDate.setFullYear(startDate.getFullYear() - 1);
+
+}
+
+    // Ensure startDate is not before investment date
+const investmentStartDate = new Date(investment.invested_at);
+if (startDate < investmentStartDate) {
+  startDate = investmentStartDate;
+}
+
+    const startDateStr = getISTDateString(startDate);
+    const endDateStr = getISTDateString(endDate);
+
+    // Fetch investment history
+    const investmentHistory = await c.env.DB.prepare(`
+      SELECT 
+        recorded_date,
+        current_value,
+        total_pnl,
+        total_pnl_percentage
+      FROM investment_history
+      WHERE investment_id = ?
+        AND recorded_date >= ?
+        AND recorded_date <= ?
+      ORDER BY recorded_date ASC
+    `).bind(investmentId, startDateStr, endDateStr).all<InvestmentHistory>();
+
+    if (!investmentHistory.results || investmentHistory.results.length === 0) {
+      return c.json(errorResponse('NO_DATA', 'No historical data available for this investment. Data is recorded daily.'), 404);
+    }
+
+    // Determine benchmark symbol
+    const benchmarkSymbol = customBenchmark || investment.benchmark_symbol || 'NIFTY 50';
+
+// Fetch benchmark data
+const benchmarkHistory = await c.env.DB.prepare(`
+  SELECT 
+    recorded_date,
+    close_price
+  FROM benchmark_data
+  WHERE symbol = ?
+    AND recorded_date >= ?
+    AND recorded_date <= ?
+  ORDER BY recorded_date ASC
+`).bind(benchmarkSymbol, startDateStr, endDateStr).all<BenchmarkData>();
+
+
+
+// Create maps for quick lookup
+const investmentMap = new Map(
+  investmentHistory.results.map(row => [row.recorded_date, row.current_value])
+);
+const benchmarkMap = new Map(
+  benchmarkHistory.results?.map(row => [row.recorded_date, row.close_price]) || []
+);
+
+
+// Prepare dates array - use investment dates as primary
+const dates = investmentHistory.results.map(row => row.recorded_date);
+
+// Fill data arrays (forward-fill missing dates)
+const investmentValues: number[] = [];
+const benchmarkValues: number[] = [];
+let lastInvestmentValue = investmentHistory.results[0].current_value;
+if (!benchmarkHistory.results || benchmarkHistory.results.length === 0) {
+  return c.json(
+    errorResponse(
+      'NO_BENCHMARK_DATA',
+      `No benchmark data available for ${benchmarkSymbol}. The portfolio chart will still display.`
+    ),
+    404
+  );
+}
+
+let lastBenchmarkValue = benchmarkHistory.results[0].close_price;
+
+dates.forEach((date, index) => {
+  // Investment value
+  if (investmentMap.has(date)) {
+    lastInvestmentValue = investmentMap.get(date)!;
+  }
+  investmentValues.push(lastInvestmentValue);
+
+  // Benchmark value
+  if (benchmarkMap.has(date)) {
+    lastBenchmarkValue = benchmarkMap.get(date)!;
+  }
+  benchmarkValues.push(lastBenchmarkValue);
+  
+  // Debug first few and last few
+  if (index < 3 || index > dates.length - 3) {
+    console.log(`[DEBUG] Date ${date}: investment=${lastInvestmentValue}, benchmark=${lastBenchmarkValue}`);
+  }
+});
+
+
+
+
+    // Normalize both series to base 100
+    const normalizedInvestment = normalizeToBase100(investmentValues);
+    const normalizedBenchmark = normalizeToBase100(benchmarkValues);
+
+    // Prepare response
+    const performanceData: PerformanceData = {
+      dates,
+      values: normalizedInvestment,
+      benchmark_values: normalizedBenchmark,
+      benchmark_name: benchmarkSymbol
+    };
+
+    return c.json(successResponse(performanceData));
+
+  } catch (error) {
+    console.error('Error fetching performance data:', error);
+    return c.json(
+      errorResponse('INTERNAL_ERROR', 'Failed to fetch performance data'),
+      500
+    );
   }
 });
 
