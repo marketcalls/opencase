@@ -25,7 +25,9 @@
       "Bash(copy \"D:\\AI Bootcamp 2025\\Session30\\opencase\\prompts\\openalgo-main\\License.md\" \"D:\\AI Bootcamp 2025\\Session30\\opencase\\LICENSE\")",
       "Bash(copy \"D:\\AI Bootcamp 2025\\Session30\\opencase\\prompts\\openalgo-main\\CONTRIBUTING.md\" \"D:\\AI Bootcamp 2025\\Session30\\opencase\\CONTRIBUTING.md\")",
       "Bash(copy:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(if exist nul del /f nul)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []
