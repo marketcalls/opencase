@@ -1682,34 +1682,34 @@ investments.get('/:id/performance', async (c) => {
 
     // Calculate date range based on period
     const endDate = new Date();
-    const startDate = new Date(investment.invested_at);
-    
+    let startDate = new Date(endDate); // Clone endDate, not invested_at
+
     switch (period) {
-      case '1M':
-        startDate.setMonth(endDate.getMonth() - 1);
-        break;
-      case '3M':
-        startDate.setMonth(endDate.getMonth() - 3);
-        break;
-      case '6M':
-        startDate.setMonth(endDate.getMonth() - 6);
-        break;
-      case '1Y':
-        startDate.setFullYear(endDate.getFullYear() - 1);
-        break;
-      case 'ALL':
-        // Use original investment date
-        startDate.setTime(new Date(investment.invested_at).getTime());
-        break;
-      default:
-        startDate.setFullYear(endDate.getFullYear() - 1);
-    }
+  case '1M':
+    startDate.setMonth(startDate.getMonth() - 1);
+    break;
+  case '3M':
+    startDate.setMonth(startDate.getMonth() - 3);
+    break;
+  case '6M':
+    startDate.setMonth(startDate.getMonth() - 6);
+    break;
+  case '1Y':
+    startDate.setFullYear(startDate.getFullYear() - 1);
+    break;
+  case 'ALL':
+    startDate = new Date(investment.invested_at);
+    break;
+  default:
+    startDate.setFullYear(startDate.getFullYear() - 1);
+
+}
 
     // Ensure startDate is not before investment date
-    const investmentStartDate = new Date(investment.invested_at);
-    if (startDate < investmentStartDate) {
-      startDate.setTime(investmentStartDate.getTime());
-    }
+const investmentStartDate = new Date(investment.invested_at);
+if (startDate < investmentStartDate) {
+  startDate = investmentStartDate;
+}
 
     const startDateStr = getISTDateString(startDate);
     const endDateStr = getISTDateString(endDate);
@@ -1747,9 +1747,7 @@ const benchmarkHistory = await c.env.DB.prepare(`
   ORDER BY recorded_date ASC
 `).bind(benchmarkSymbol, startDateStr, endDateStr).all<BenchmarkData>();
 
-console.log('[DEBUG] Benchmark history count:', benchmarkHistory.results?.length);
-console.log('[DEBUG] First benchmark record:', benchmarkHistory.results?.[0]);
-console.log('[DEBUG] Last benchmark record:', benchmarkHistory.results?.[benchmarkHistory.results?.length - 1]);
+
 
 // Create maps for quick lookup
 const investmentMap = new Map(
@@ -1759,8 +1757,6 @@ const benchmarkMap = new Map(
   benchmarkHistory.results?.map(row => [row.recorded_date, row.close_price]) || []
 );
 
-console.log('[DEBUG] Investment map size:', investmentMap.size);
-console.log('[DEBUG] Benchmark map size:', benchmarkMap.size);
 
 // Prepare dates array - use investment dates as primary
 const dates = investmentHistory.results.map(row => row.recorded_date);
@@ -1769,7 +1765,17 @@ const dates = investmentHistory.results.map(row => row.recorded_date);
 const investmentValues: number[] = [];
 const benchmarkValues: number[] = [];
 let lastInvestmentValue = investmentHistory.results[0].current_value;
-let lastBenchmarkValue = benchmarkHistory.results?.[0]?.close_price || 21000; // Use realistic default
+if (!benchmarkHistory.results || benchmarkHistory.results.length === 0) {
+  return c.json(
+    errorResponse(
+      'NO_BENCHMARK_DATA',
+      `No benchmark data available for ${benchmarkSymbol}. The portfolio chart will still display.`
+    ),
+    404
+  );
+}
+
+let lastBenchmarkValue = benchmarkHistory.results[0].close_price;
 
 dates.forEach((date, index) => {
   // Investment value
@@ -1790,8 +1796,7 @@ dates.forEach((date, index) => {
   }
 });
 
-console.log('[DEBUG] Investment values sample:', investmentValues.slice(0, 5));
-console.log('[DEBUG] Benchmark values sample:', benchmarkValues.slice(0, 5));
+
 
 
     // Normalize both series to base 100

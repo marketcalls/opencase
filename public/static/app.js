@@ -2979,14 +2979,14 @@ function renderInvestmentDetail() {
         </div>
 
         <!-- Chart Container -->
-        <div class="relative" style="height: 400px;">
-          <canvas id="performanceChart"></canvas>
-        </div>
-
-        <!-- Loading State -->
-        <div id="chartLoading" class="hidden absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+          <div class="relative" style="height: 400px;">
+            <canvas id="performanceChart"></canvas>
+  
+          <div id="chartLoading" class="hidden absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
           <i class="fas fa-spinner fa-spin text-4xl text-indigo-600"></i>
-        </div>
+             </div>
+          </div>
+ 
 
         <!-- Error State -->
         <div id="chartError" class="hidden text-center py-12 text-gray-500">
